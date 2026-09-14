@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"sshtool/internal/keytool"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 )
@@ -56,6 +57,7 @@ type Model struct {
 	msg        string
 	msgSeq     int
 	outPending bool
+	afterCmd   tea.Cmd // 对话框回调派生的异步命令
 
 	lastClickAt  time.Time
 	lastClickKey string
@@ -78,6 +80,18 @@ type outputTick struct{ id string }
 type sessionEvent struct{ ev remotessh.Event }
 
 type clearMsg struct{ seq int }
+
+// genDoneMsg 本地密钥生成完成。
+type genDoneMsg struct {
+	info keytool.KeyInfo
+	err  error
+}
+
+// pushDoneMsg 批量推送公钥完成。
+type pushDoneMsg struct {
+	results    []keytool.PushResult
+	remotePath string
+}
 
 // waitEvent 等待下一个会话事件。
 func waitEvent(mgr *remotessh.Manager) tea.Cmd {
@@ -210,6 +224,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.outPending = false
 		return m, m.armOutput()
 
+	case genDoneMsg:
+		m.showGenResult(msg.info, msg.err)
+		return m, nil
+
+	case pushDoneMsg:
+		m.showPushResult(msg.results, msg.remotePath)
+		return m, nil
+
 	case clearMsg:
 		if msg.seq == m.msgSeq {
 			m.msg = ""
@@ -217,6 +239,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// takeAfterCmd 取出并清空对话框回调派生的命令。
+func (m *Model) takeAfterCmd() tea.Cmd {
+	c := m.afterCmd
+	m.afterCmd = nil
+	return c
 }
 
 // onSessionEvent 处理会话状态变化。

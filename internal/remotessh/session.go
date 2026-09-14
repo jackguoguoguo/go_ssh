@@ -188,18 +188,8 @@ func (s *Session) Close() {
 
 // dial 在后台协程中完成建连、申请 PTY 并启动 shell。
 func (s *Session) dial(secret string) {
-	addr := s.Conn.Host
-	if s.Conn.Port > 0 && s.Conn.Port != 22 {
-		addr = addr + ":" + itoa(s.Conn.Port)
-	} else if s.Conn.Port > 0 {
-		addr = addr + ":" + itoa(s.Conn.Port)
-	} else {
-		addr = addr + ":22"
-	}
-	user := s.Conn.User
-	if user == "" {
-		user = "root"
-	}
+	addr := addrOf(s.Conn)
+	user := userOf(s.Conn)
 
 	methods, err := authMethods(s.Conn, secret)
 	if err != nil {

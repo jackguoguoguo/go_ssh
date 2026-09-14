@@ -431,7 +431,7 @@ func (m *Model) renderStatus(l layout) string {
 		left = " " + m.msg
 		left = lipgloss.NewStyle().Foreground(cWarn).Render(left)
 	} else {
-		left = " Tab 切换焦点 · Enter 执行 · / 过滤 · Ctrl+X 命令行 · Ctrl+W 关闭 · PgUp/PgDn 回滚 · Ctrl+H 帮助"
+		left = " Tab 焦点 · Enter 执行 · / 过滤 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+W 关闭 · PgUp 回滚 · Ctrl+H 帮助"
 		left = styleHint.Render(left)
 	}
 	right := ""

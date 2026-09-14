@@ -67,7 +67,9 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.quitting {
 			return m, tea.Quit
 		}
-		return m, m.armOutput()
+		// 对话框回调可能派生出异步命令（生成密钥 / 推送公钥）
+		cmd := m.takeAfterCmd()
+		return m, tea.Batch(cmd, m.armOutput())
 	}
 
 	// 命令行编辑模式下，除少数功能键外全部交给输入行处理，
@@ -103,6 +105,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusTerm
 		m.inputMode = true
 		return m, nil
+	case tea.KeyCtrlG:
+		return m, m.openKeyManager()
 	case tea.KeyTab, tea.KeyShiftTab:
 		step := 1
 		if msg.Type == tea.KeyShiftTab {
@@ -562,6 +566,17 @@ func (m *Model) dialogMouse(x, y int) (tea.Model, tea.Cmd) {
 			m.dlg.focus = i
 			return m, nil
 		}
+	}
+	for i, iy := range hit.itemY {
+		if y < iy || y > iy+1 {
+			continue
+		}
+		if m.dlg.cursor == i {
+			m.commitPick(m.dlg) // 再次点击当前项 = 确认
+			return m, nil
+		}
+		m.dlg.cursor = i
+		return m, nil
 	}
 	return m, nil
 }

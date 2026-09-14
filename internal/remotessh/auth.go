@@ -7,6 +7,7 @@ package remotessh
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,6 +26,23 @@ var ErrNeedPassword = errors.New("ssh: 需要密码")
 
 // DefaultDialTimeout 建立 TCP 与 SSH 握手的超时时间。
 const DefaultDialTimeout = 12 * time.Second
+
+// addrOf 根据连接配置拼出 host:port。
+func addrOf(conn store.Connection) string {
+	port := conn.Port
+	if port <= 0 {
+		port = 22
+	}
+	return net.JoinHostPort(conn.Host, itoa(port))
+}
+
+// userOf 返回登录用户名，缺省为 root。
+func userOf(conn store.Connection) string {
+	if conn.User != "" {
+		return conn.User
+	}
+	return "root"
+}
 
 // authMethods 根据连接配置构造认证方式列表。
 // secret 的含义取决于配置：密码认证时为登录密码；私钥认证时为私钥口令（可为空）。

@@ -15,7 +15,15 @@ const (
 	dlgSecret             // 密码 / 私钥口令
 	dlgConfirm            // 确认
 	dlgHelp               // 帮助
+	dlgPick               // 列表选择（支持多选）
+	dlgText               // 纯文本展示（密钥生成结果 / 推送结果）
 )
+
+// pickItem 选择器里的一项。
+type pickItem struct {
+	Label string
+	Desc  string
+}
 
 // dlgField 表单字段。
 type dlgField struct {
@@ -38,12 +46,21 @@ type dlg struct {
 	okLabel  string
 	onOK     func(m *Model, values []string)
 	onCancel func(m *Model)
+
+	// dlgPick 专用
+	items   []pickItem
+	cursor  int
+	filter  string
+	multi   bool
+	checked map[int]bool
+	onPick  func(m *Model, picked []int)
 }
 
 // dlgHit 记录对话框内可点击区域的屏幕坐标。
 type dlgHit struct {
 	box      rect
 	fieldY   []int // 每个字段所在的屏幕行
+	itemY    []int // 选择器每一项的屏幕行，下标对应过滤后的可见列表
 	btnY     int
 	okX0     int
 	okX1     int
@@ -156,9 +173,47 @@ func (m *Model) renderDialog() string {
 	}
 
 	switch d.kind {
-	case dlgHelp:
+	case dlgHelp, dlgText:
 		for _, line := range d.body {
 			lines = append(lines, lipgloss.NewStyle().Foreground(cFg).Render(line))
+		}
+	case dlgPick:
+		visible := m.visiblePick(d)
+		for i, idx := range visible {
+			it := d.items[idx]
+			hit.itemY = append(hit.itemY, len(lines))
+
+			prefix := "   "
+			if d.multi {
+				if d.checked[idx] {
+					prefix = " [x] "
+				} else {
+					prefix = " [ ] "
+				}
+			}
+			label := it.Label
+			if len([]rune(label)) > 30 {
+				label = string([]rune(label)[:29]) + "…"
+			}
+			row := prefix + label
+			if it.Desc != "" {
+				row += "  " + styleDim.Render(cutPlain(it.Desc, max(10, 44-len([]rune(row)))))
+			}
+			if i == d.cursor {
+				row = lipgloss.NewStyle().Background(cAccent).Foreground(cSelFg).Bold(true).Render(row)
+			}
+			lines = append(lines, row)
+		}
+		if len(visible) == 0 {
+			lines = append(lines, styleDim.Render("   （无匹配项）"))
+		}
+		lines = append(lines, "")
+		if d.filter != "" {
+			lines = append(lines, styleDim.Render("  过滤: "+d.filter))
+		} else if d.multi {
+			lines = append(lines, styleDim.Render("  ↑↓ 移动 · 空格选中/取消 · a 全选 · Enter 确定 · Esc 返回 · 可直接点击"))
+		} else {
+			lines = append(lines, styleDim.Render("  ↑↓ 移动 · 输入关键字过滤 · Enter 确定 · Esc 返回 · 可直接点击"))
 		}
 	case dlgForm, dlgSecret:
 		for i, f := range d.fields {
@@ -227,9 +282,16 @@ func (m *Model) renderDialog() string {
 	hit.okX1 = hit.okX0 + lipgloss.Width(okBtn)
 	hit.cancelX0 = hit.okX1 + 2
 	hit.cancelX1 = hit.cancelX0 + lipgloss.Width(cancelBtn)
-	lines = append(lines, strings.Repeat(" ", btnPrefix)+okBtn+"  "+cancelBtn)
-	lines = append(lines, "")
-	lines = append(lines, styleDim.Render("Tab/↑↓ 切换字段 · Enter 确定 · Esc 取消 · 支持鼠标点击"))
+	switch d.kind {
+	case dlgPick:
+		lines = append(lines, strings.Repeat(" ", btnPrefix)+okBtn+"  "+cancelBtn)
+		lines = append(lines, "")
+		lines = append(lines, styleDim.Render("Enter 确定 · Esc 返回 · 支持鼠标点击"))
+	default:
+		lines = append(lines, strings.Repeat(" ", btnPrefix)+okBtn+"  "+cancelBtn)
+		lines = append(lines, "")
+		lines = append(lines, styleDim.Render("Tab/↑↓ 切换字段 · Enter 确定 · Esc 取消 · 支持鼠标点击"))
+	}
 
 	content := strings.Join(lines, "\n")
 	box := lipgloss.NewStyle().
@@ -252,6 +314,9 @@ func (m *Model) renderDialog() string {
 	for i := range hit.fieldY {
 		hit.fieldY[i] += y0 + 2 // 边框 + padding
 	}
+	for i := range hit.itemY {
+		hit.itemY[i] += y0 + 2
+	}
 	hit.btnY += y0 + 2
 	hit.okX0 += x0 + 2
 	hit.okX1 += x0 + 2
@@ -263,7 +328,116 @@ func (m *Model) renderDialog() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+// ---------- 选择器辅助 ----------
+
+// visiblePick 返回过滤后可见项在 items 中的原始下标，并修正越界 cursor。
+func (m *Model) visiblePick(d *dlg) []int {
+	q := strings.ToLower(strings.TrimSpace(d.filter))
+	out := make([]int, 0, len(d.items))
+	for i, it := range d.items {
+		if q == "" || strings.Contains(strings.ToLower(it.Label), q) || strings.Contains(strings.ToLower(it.Desc), q) {
+			out = append(out, i)
+		}
+	}
+	if d.cursor >= len(out) {
+		d.cursor = len(out) - 1
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
+	return out
+}
+
+// commitPick 确认选择并触发回调。
+func (m *Model) commitPick(d *dlg) {
+	visible := m.visiblePick(d)
+	var picked []int
+	if d.multi {
+		for _, idx := range visible {
+			if d.checked[idx] {
+				picked = append(picked, idx)
+			}
+		}
+		if len(picked) == 0 && len(visible) > 0 {
+			picked = append(picked, visible[d.cursor]) // 未勾选时默认取当前项
+		}
+	} else if len(visible) > 0 {
+		picked = append(picked, visible[d.cursor])
+	}
+	fn := d.onPick
+	m.dlg = nil
+	if fn != nil && len(picked) > 0 {
+		fn(m, picked)
+	}
+}
+
 // ---------- 键盘 ----------
+
+// pickKey 处理选择器对话框内的按键。
+func (m *Model) pickKey(d *dlg, msg tea.KeyMsg) {
+	switch msg.Type {
+	case tea.KeyUp:
+		if d.cursor > 0 {
+			d.cursor--
+		}
+		return
+	case tea.KeyDown:
+		d.cursor++
+		m.visiblePick(d)
+		return
+	case tea.KeyPgUp:
+		d.cursor -= 8
+		m.visiblePick(d)
+		return
+	case tea.KeyPgDown:
+		d.cursor += 8
+		m.visiblePick(d)
+		return
+	case tea.KeyEnter:
+		m.commitPick(d)
+		return
+	case tea.KeyBackspace:
+		if len(d.filter) > 0 {
+			runes := []rune(d.filter)
+			d.filter = string(runes[:len(runes)-1])
+		}
+		return
+	case tea.KeySpace:
+		if d.multi {
+			if visible := m.visiblePick(d); len(visible) > 0 {
+				if d.checked == nil {
+					d.checked = map[int]bool{}
+				}
+				idx := visible[d.cursor]
+				d.checked[idx] = !d.checked[idx]
+			}
+			return // 多选模式下空格用于勾选，不当作过滤字符
+		}
+	}
+
+	if len(msg.Runes) == 1 {
+		r := msg.Runes[0]
+		if r == 'a' && d.multi {
+			if d.checked == nil {
+				d.checked = map[int]bool{}
+			}
+			all := true
+			for i := range d.items {
+				if !d.checked[i] {
+					all = false
+				}
+			}
+			for i := range d.items {
+				d.checked[i] = !all
+			}
+			return
+		}
+		if r >= 0x20 {
+			d.filter += string(r)
+			return
+		}
+	}
+}
 
 // handleDialogKey 处理对话框内的按键，返回 true 表示已消费。
 func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
@@ -280,8 +454,12 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
 	}
 
 	switch d.kind {
-	case dlgHelp:
+	case dlgHelp, dlgText:
 		m.dlg = nil
+		return true
+
+	case dlgPick:
+		m.pickKey(d, msg)
 		return true
 
 	case dlgConfirm:
@@ -396,6 +574,7 @@ func helpBody() []string {
 		"  Ctrl+R          重连当前会话",
 		"  Ctrl+B          跳到「收藏命令」面板",
 		"  Ctrl+K          跳到「历史命令」面板并过滤",
+		"  Ctrl+G          SSH 密钥管理：生成密钥 / 推送公钥到 authorized_keys",
 		"  Ctrl+P          把输入行内容加入收藏",
 		"  Ctrl+X          进入命令行（可编辑后回车执行）",
 		"  Tab / Shift+Tab 切换焦点（连接→收藏→历史→终端）",

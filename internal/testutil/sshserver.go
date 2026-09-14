@@ -6,15 +6,65 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	sshx "golang.org/x/crypto/ssh"
 )
 
+// POSIXShell 返回一个可用的 POSIX shell 路径；不可用时返回空串。
+//
+// 注意：Windows 上有两个「假 bash」必须排除——
+//   - C:\Windows\system32\bash.exe  WSL 启动存根，不会按 POSIX 语义执行 -c
+//   - %LOCALAPPDATA%\Microsoft\WindowsApps\bash.exe  Microsoft Store 别名存根
+//
+// 它们会让依赖 exec 的集成测试得出错误结论，因此这里优先选用 Git for Windows 自带的 bash。
+func POSIXShell() string {
+	candidates := []string{
+		`C:\Program Files\Git\usr\bin\bash.exe`,
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files\Git\bin\sh.exe`,
+		`C:\cygwin64\bin\bash.exe`,
+	}
+	if runtime.GOOS != "windows" {
+		candidates = []string{"/bin/bash", "/bin/sh"}
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	for _, c := range []string{"bash", "sh"} {
+		p, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		if runtime.GOOS == "windows" && isWindowsStub(p) {
+			continue
+		}
+		return p
+	}
+	return ""
+}
+
+// isWindowsStub 判断是否为 WSL / Store 的 bash 存根。
+func isWindowsStub(p string) bool {
+	dir := strings.ToLower(filepath.Dir(p))
+	return strings.Contains(dir, `windows\system32`) || strings.Contains(dir, "windowsapps")
+}
+
 // SSHServer 是一个仅用于测试的 SSH 服务端。
 type SSHServer struct {
 	Host string
 	Port int
+	// Home 是该服务端执行命令时使用的工作家目录。
+	// 每个服务端实例各有一份，这样「推送到多台主机」的测试能各自拥有独立的
+	// authorized_keys，不会因为共享 HOME 而互相覆盖。
+	Home string
 	ln   net.Listener
 }
 
@@ -47,7 +97,7 @@ func StartSSHServer(t *testing.T) *SSHServer {
 		t.Fatal(err)
 	}
 
-	s := &SSHServer{ln: ln}
+	s := &SSHServer{ln: ln, Home: t.TempDir()}
 	addr := ln.Addr().(*net.TCPAddr)
 	s.Host, s.Port = addr.IP.String(), addr.Port
 
@@ -62,6 +112,38 @@ func StartSSHServer(t *testing.T) *SSHServer {
 	}()
 	t.Cleanup(func() { _ = ln.Close() })
 	return s
+}
+
+// pathSep 用于拼接 PATH：Windows 用分号，其余平台用冒号。
+var pathSep = func() string {
+	if runtime.GOOS == "windows" {
+		return ";"
+	}
+	return ":"
+}()
+
+// runRemoteCmd 在服务端执行一条命令并返回退出码；无可用 shell 时返回 127。
+func (s *SSHServer) runRemoteCmd(ch sshx.Channel, cmdStr string) int {
+	shell := POSIXShell()
+	if shell == "" || cmdStr == "" {
+		return 127
+	}
+	c := exec.Command(shell, "-c", cmdStr)
+	c.Stdout = ch
+	c.Stderr = ch.Stderr()
+	// 非登录式 shell 不会加载 profile，PATH 会沿用宿主机环境变量，
+	// 导致 dirname/grep/chmod 等 coreutils 找不到。这里补一段 POSIX 路径。
+	c.Env = append(os.Environ(),
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin"+pathSep+os.Getenv("PATH"),
+		"HOME="+s.Home,
+	)
+	if err := c.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		return 1
+	}
+	return 0
 }
 
 func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
@@ -105,6 +187,16 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 					}()
 				case "window-change":
 					_ = req.Reply(true, nil)
+				case "exec":
+					_ = req.Reply(true, nil)
+					// payload 前 4 字节是命令字符串长度
+					cmdStr := ""
+					if len(req.Payload) > 4 {
+						cmdStr = string(req.Payload[4:])
+					}
+					code := s.runRemoteCmd(ch, cmdStr)
+					_, _ = ch.SendRequest("exit-status", false, sshx.Marshal(struct{ Status uint32 }{uint32(code)}))
+					_ = ch.Close()
 				default:
 					_ = req.Reply(false, nil)
 				}
