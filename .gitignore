@@ -1,0 +1,13 @@
+# 构建产物
+/sshtool
+/sshtool.exe
+/dist/
+
+# 测试与覆盖率
+*.test
+*.out
+coverage.txt
+
+# 编辑器
+.vscode/
+.idea/

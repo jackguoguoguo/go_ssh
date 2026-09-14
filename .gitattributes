@@ -1,0 +1,11 @@
+# Go 源文件统一 LF：gofmt 只接受 LF，避免 Windows 上检出后被 autocrlf 改成 CRLF
+*.go   text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.md   text eol=lf
+LICENSE text eol=lf
+Makefile text eol=lf
+.gitignore text eol=lf
+
+# Windows 脚本保持 CRLF
+*.ps1  text eol=crlf
