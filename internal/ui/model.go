@@ -59,6 +59,9 @@ type Model struct {
 	outPending bool
 	afterCmd   tea.Cmd // 对话框回调派生的异步命令
 
+	cwd      string       // 远端当前工作目录（命令行 cd 解析得到的兜底值）
+	fsEvents chan fsEvent // 文件编辑自动回传的事件通道
+
 	lastClickAt  time.Time
 	lastClickKey string
 
@@ -68,7 +71,7 @@ type Model struct {
 // New 创建根 Model。
 func New(st *store.Store, mgr *remotessh.Manager) Model {
 	configPathHint = st.Path()
-	m := Model{st: st, mgr: mgr, focus: focusConn}
+	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16)}
 	m.refresh()
 	return m
 }
@@ -200,6 +203,87 @@ func (m *Model) activeIndex() int {
 	return -1
 }
 
+// cwdMarker 是远端 shell 通过 OSC 标题上报当前目录时使用的前缀。
+const cwdMarker = "SSHTPWD:"
+
+// remoteCwd 读取当前活动会话的远端工作目录。
+// 优先使用终端标题里由 PROMPT_COMMAND 静默上报的值（前缀 SSHTPWD:），
+// 取不到时回退到本机根据命令行 cd 解析得到的值。
+func (m *Model) remoteCwd() string {
+	s := m.activeSession()
+	if s == nil {
+		return ""
+	}
+	title := s.Term().Title()
+	if strings.HasPrefix(title, cwdMarker) {
+		return strings.TrimSpace(title[len(cwdMarker):])
+	}
+	return m.cwd
+}
+
+// trackCwd 在用户通过命令行执行命令后，尝试解析 cd 类命令以更新兜底 cwd。
+func (m *Model) trackCwd(cmd string) {
+	c := strings.TrimSpace(cmd)
+	if c == "" {
+		return
+	}
+	fields := strings.Fields(c)
+	if len(fields) == 0 || fields[0] != "cd" {
+		return
+	}
+	arg := ""
+	if len(fields) > 1 {
+		arg = fields[1]
+	}
+	m.cwd = resolvePath(m.cwd, arg)
+}
+
+// resolvePath 结合当前目录解析一个 cd 参数（支持绝对路径、~、.、..）。
+func resolvePath(base, arg string) string {
+	if arg == "" || arg == "~" {
+		return "~"
+	}
+	if arg == "-" {
+		return base // 简化：不回溯旧目录
+	}
+	if strings.HasPrefix(arg, "~/") {
+		return "~" + arg[1:]
+	}
+	if arg == "." {
+		return base
+	}
+	if !strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "~") {
+		if base == "" || base == "~" {
+			arg = "~/" + arg
+		} else if strings.HasSuffix(base, "/") {
+			arg = base + arg
+		} else {
+			arg = base + "/" + arg
+		}
+	}
+	parts := strings.Split(arg, "/")
+	stack := make([]string, 0, len(parts))
+	for _, p := range parts {
+		switch p {
+		case "", ".":
+			// 跳过
+		case "..":
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			stack = append(stack, p)
+		}
+	}
+	if len(stack) == 0 {
+		return "/"
+	}
+	if stack[0] == "~" {
+		return "~/" + strings.Join(stack[1:], "/")
+	}
+	return "/" + strings.Join(stack, "/")
+}
+
 // ---------- Update ----------
 
 // Update 实现 tea.Model。
@@ -230,6 +314,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushDoneMsg:
 		m.showPushResult(msg.results, msg.remotePath)
+		return m, nil
+
+	case fsLoadedMsg:
+		if m.dlg != nil && m.dlg.kind == dlgFile {
+			d := m.dlg
+			d.fsPath = msg.path
+			if msg.err != nil {
+				d.fsMsg = "读取目录失败：" + msg.err.Error()
+				d.fsLoading = false
+			} else {
+				d.fsEntries = msg.entries
+				d.fsCursor = 0
+				d.fsScroll = 0
+				d.fsLoading = false
+				d.fsMsg = ""
+			}
+		}
+		return m, nil
+
+	case fsSavedMsg:
+		if msg.err != "" {
+			m.setMsg("上传失败：" + msg.err)
+		} else {
+			m.setMsg("已保存并回传：" + msg.path)
+		}
+		if m.dlg != nil && m.dlg.kind == dlgFile {
+			return m, m.waitFsEvent()
+		}
 		return m, nil
 
 	case clearMsg:

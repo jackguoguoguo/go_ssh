@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pkg/sftp"
 	sshx "golang.org/x/crypto/ssh"
 )
 
@@ -197,6 +198,27 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 					code := s.runRemoteCmd(ch, cmdStr)
 					_, _ = ch.SendRequest("exit-status", false, sshx.Marshal(struct{ Status uint32 }{uint32(code)}))
 					_ = ch.Close()
+				case "subsystem":
+					// payload 前 4 字节是子系统名长度
+					name := ""
+					if len(req.Payload) > 4 {
+						name = string(req.Payload[4:])
+					}
+					if name == "sftp" {
+						_ = req.Reply(true, nil)
+						go func() {
+							srv, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(s.Home))
+							if err != nil {
+								_ = ch.Close()
+								return
+							}
+							defer srv.Close()
+							_ = srv.Serve()
+							_ = ch.Close()
+						}()
+					} else {
+						_ = req.Reply(false, nil)
+					}
 				default:
 					_ = req.Reply(false, nil)
 				}

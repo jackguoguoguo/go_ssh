@@ -218,6 +218,7 @@ func (m *Model) runCommand(cmd string) {
 		return
 	}
 	_ = s.Write([]byte(cmd + "\r"))
+	m.trackCwd(cmd)
 	m.st.AddHistory(cmd, s.Conn.Host)
 	_ = m.st.Save()
 	m.refresh()

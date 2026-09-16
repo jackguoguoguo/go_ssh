@@ -281,10 +281,23 @@ func (s *Session) dial(secret string) {
 
 	s.emit(Event{SessionID: s.ID, Kind: EventConnected})
 
+	// 让远端 shell 每次刷新提示符时通过 OSC 标题上报当前工作目录（前缀 SSHTPWD:）。
+	// 终端模拟器会把 OSC 标题吞掉不显示，UI 读取标题即可静默获得远端 cwd，
+	// 无需轮询命令、也不污染屏幕。bash 支持 PROMPT_COMMAND；sh 仅设置了无害的环境变量。
+	s.injectCwdSync()
+
 	if s.Conn.StartupCmd != "" {
 		time.Sleep(300 * time.Millisecond)
 		_ = s.Write([]byte(s.Conn.StartupCmd + "\n"))
 	}
+}
+
+// injectCwdSync 让远端 shell 每次刷新提示符时通过 OSC 标题上报当前工作目录。
+// 标题格式为 `SSHTPWD:<cwd>`，由终端模拟器静默捕获，供 UI 读取。
+func (s *Session) injectCwdSync() {
+	// 原始字符串：反斜杠保持字面量，交给远端 printf 解释（\033=ESC，\\=单反斜杠=OSC 终结 ST）。
+	cmd := `PROMPT_COMMAND='printf "\033]0;SSHTPWD:%s\033\\" "$(pwd)"'`
+	_ = s.Write([]byte(cmd + "\n"))
 }
 
 // readLoop 读取远端输出，按 batchWindow 聚合成批后写入终端缓冲区。

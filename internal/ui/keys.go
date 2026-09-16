@@ -107,6 +107,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyCtrlG:
 		return m, m.openKeyManager()
+	case tea.KeyCtrlO:
+		return m, m.openFileBrowser()
 	case tea.KeyTab, tea.KeyShiftTab:
 		step := 1
 		if msg.Type == tea.KeyShiftTab {

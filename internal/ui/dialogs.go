@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 )
 
@@ -17,6 +18,7 @@ const (
 	dlgHelp               // 帮助
 	dlgPick               // 列表选择（支持多选）
 	dlgText               // 纯文本展示（密钥生成结果 / 推送结果）
+	dlgFile               // 远端文件浏览器（SFTP）
 )
 
 // pickItem 选择器里的一项。
@@ -54,6 +56,17 @@ type dlg struct {
 	multi   bool
 	checked map[int]bool
 	onPick  func(m *Model, picked []int)
+
+	// dlgFile 专用（远端文件浏览器）
+	fs        *remotessh.FSClient
+	fsPath    string
+	fsEntries []remotessh.Entry
+	fsCursor  int
+	fsScroll  int
+	fsFilter  string
+	fsLoading bool
+	fsMsg     string
+	fsDone    chan struct{} // 关闭对话框时关闭，停止编辑监听
 }
 
 // dlgHit 记录对话框内可点击区域的屏幕坐标。
@@ -215,6 +228,50 @@ func (m *Model) renderDialog() string {
 		} else {
 			lines = append(lines, styleDim.Render("  ↑↓ 移动 · 输入关键字过滤 · Enter 确定 · Esc 返回 · 可直接点击"))
 		}
+	case dlgFile:
+		if d.fsLoading {
+			lines = append(lines, styleDim.Render("  加载中…"))
+			break
+		}
+		pathShown := d.fsPath
+		if len([]rune(pathShown)) > 60 {
+			pathShown = "…" + string([]rune(pathShown)[len([]rune(pathShown))-59:])
+		}
+		lines = append(lines, "  "+styleDim.Render("路径")+" "+pathShown)
+		lines = append(lines, "  "+styleTitle.Render(padRune("名称", 32)+" 大小       修改时间"))
+		visible := visibleFs(d)
+		avail := m.height - len(lines) - 4
+		if avail < 3 {
+			avail = 3
+		}
+		if len(visible) == 0 {
+			lines = append(lines, styleDim.Render("   （空目录或无可匹配项）"))
+		}
+		for i := 0; i < avail && d.fsScroll+i < len(visible); i++ {
+			idx := d.fsScroll + i
+			it := visible[idx]
+			hit.itemY = append(hit.itemY, len(lines))
+			name := it.Name
+			if it.IsDir {
+				name += "/"
+			}
+			size := ""
+			if !it.IsDir {
+				size = humanSize(it.Size)
+			}
+			mod := it.ModTime.Format("01-02 15:04")
+			row := "  " + padRune(name, 32) + " " + padRune(size, 10) + " " + mod
+			if idx == d.fsCursor {
+				row = lipgloss.NewStyle().Background(cAccent).Foreground(cSelFg).Bold(true).Render(row)
+			}
+			lines = append(lines, row)
+		}
+		lines = append(lines, "")
+		if d.fsFilter != "" {
+			lines = append(lines, styleDim.Render("  过滤: "+d.fsFilter))
+		}
+		lines = append(lines, styleDim.Render("  Enter 打开/进入 · e 编辑(本地改动自动回传) · u/Backspace 上级 · ~ 家目录 · / 过滤 · Esc 关闭"))
+
 	case dlgForm, dlgSecret:
 		for i, f := range d.fields {
 			active := i == d.focus
@@ -462,6 +519,10 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
 		m.pickKey(d, msg)
 		return true
 
+	case dlgFile:
+		m.fileKey(d, msg)
+		return true
+
 	case dlgConfirm:
 		if msg.Type == tea.KeyEnter || (len(msg.Runes) == 1 && (msg.Runes[0] == 'y' || msg.Runes[0] == 'Y')) {
 			fn := d.onOK
@@ -548,8 +609,19 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
 func (m *Model) closeDialog() {
 	d := m.dlg
 	m.dlg = nil
-	if d != nil && d.onCancel != nil {
-		d.onCancel(m)
+	if d != nil {
+		if d.kind == dlgFile {
+			// 停止编辑监听协程并释放 SFTP 通道
+			if d.fsDone != nil {
+				close(d.fsDone)
+			}
+			if d.fs != nil {
+				_ = d.fs.Close()
+			}
+		}
+		if d.onCancel != nil {
+			d.onCancel(m)
+		}
 	}
 }
 
@@ -575,6 +647,7 @@ func helpBody() []string {
 		"  Ctrl+B          跳到「收藏命令」面板",
 		"  Ctrl+K          跳到「历史命令」面板并过滤",
 		"  Ctrl+G          SSH 密钥管理：生成密钥 / 推送公钥到 authorized_keys",
+		"  Ctrl+O          远端文件浏览器：浏览/打开/编辑服务器上的文件",
 		"  Ctrl+P          把输入行内容加入收藏",
 		"  Ctrl+X          进入命令行（可编辑后回车执行）",
 		"  Tab / Shift+Tab 切换焦点（连接→收藏→历史→终端）",

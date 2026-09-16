@@ -431,12 +431,22 @@ func (m *Model) renderStatus(l layout) string {
 		left = " " + m.msg
 		left = lipgloss.NewStyle().Foreground(cWarn).Render(left)
 	} else {
-		left = " Tab 焦点 · Enter 执行 · / 过滤 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+W 关闭 · PgUp 回滚 · Ctrl+H 帮助"
+		left = " Tab 焦点 · Enter 执行 · / 过滤 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+O 文件 · Ctrl+W 关闭 · PgUp 回滚 · Ctrl+H 帮助"
 		left = styleHint.Render(left)
 	}
 	right := ""
-	if s := m.activeSession(); s != nil && s.Term().ScrollOffset() > 0 {
-		right = lipgloss.NewStyle().Foreground(cAccent2).Render(fmt.Sprintf("回滚 %d 行 · End 返回最新 ", s.Term().ScrollOffset()))
+	if s := m.activeSession(); s != nil {
+		cwd := m.remoteCwd()
+		if cwd == "" {
+			cwd = "(未知目录)"
+		}
+		if len([]rune(cwd)) > 42 {
+			cwd = "…" + string([]rune(cwd)[len([]rune(cwd))-41:])
+		}
+		right += lipgloss.NewStyle().Foreground(cAccent2).Render(" pwd: " + cwd + " ")
+		if s.Term().ScrollOffset() > 0 {
+			right += lipgloss.NewStyle().Foreground(cAccent2).Render(fmt.Sprintf("回滚 %d 行 · End 返最新 ", s.Term().ScrollOffset()))
+		}
 	}
 	lr := max(0, l.status.w-lipgloss.Width(right))
 	return styleStatusBar.Render(padVisible(left, lr) + right)
