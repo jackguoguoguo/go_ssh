@@ -99,19 +99,47 @@ func authMethods(conn store.Connection, secret string) ([]sshx.AuthMethod, error
 	return methods, nil
 }
 
-// hostKeyCallback 优先使用 ~/.ssh/known_hosts；不可用时退化为忽略校验（MVP 行为）。
+// hostKeyCallback 严格校验主机指纹：以 ~/.ssh/known_hosts 为准（文件缺失时创建）。
+//
+// 握手发生在后台协程里，无法就地弹窗询问，因此这里不阻塞等待用户决策，
+// 而是把「未知主机 / 指纹变更」统一转成 *HostKeyError 返回：
+//   - 交互会话：由 Session.fail 转成 EventNeedHostKey，UI 弹确认框，
+//     用户同意后调用 TrustHost 落盘再重连；
+//   - 非交互调用（RunOnce，例如批量推送公钥）：直接失败，绝不静默放通。
+//
+// 逃生舱：设置 SSHTOOL_INSECURE_HOST_KEYS=1 可退回不校验（仅供批量脚本）。
 func hostKeyCallback() sshx.HostKeyCallback {
-	home, err := os.UserHomeDir()
-	if err == nil {
-		p := filepath.Join(home, ".ssh", "known_hosts")
-		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
-			if cb, err := knownhosts.New(p); err == nil {
-				return cb
-			}
+	return func(hostname string, remote net.Addr, key sshx.PublicKey) error {
+		if insecureHostKeys() {
+			return nil
 		}
+		path, err := knownHostsPath()
+		if err != nil {
+			return err
+		}
+		if err := ensureKnownHostsFile(path); err != nil {
+			return err
+		}
+		cb, err := knownhosts.New(path)
+		if err != nil {
+			return fmt.Errorf("解析 known_hosts 失败: %w", err)
+		}
+		if err := cb(hostname, remote, key); err != nil {
+			var ke *knownhosts.KeyError
+			if errors.As(err, &ke) {
+				return &HostKeyError{
+					Addr:        hostname,
+					Type:        key.Type(),
+					Fingerprint: sshx.FingerprintSHA256(key),
+					Changed:     len(ke.Want) > 0,
+					Want:        ke.Want,
+					Key:         key,
+				}
+			}
+			return err
+		}
+		return nil
 	}
-	// TODO:  stricter 模式应改为交互式确认并写入 known_hosts。
-	return sshx.InsecureIgnoreHostKey()
 }
 
 // expandHome 把路径开头的 ~ 展开为用户目录。

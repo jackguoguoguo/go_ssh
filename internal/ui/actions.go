@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 )
 
@@ -184,6 +186,8 @@ func (m *Model) setInput(s string) {
 // ---------- 会话操作 ----------
 
 func (m *Model) switchTo(i int) {
+	// 切会话后终端缓冲区换了，选择/搜索状态必须复位
+	m.resetTermModes()
 	if len(m.sessions) == 0 {
 		return
 	}
@@ -206,22 +210,251 @@ func (m *Model) sendRaw(data []byte) {
 	_ = s.Write(data)
 }
 
-// runCommand 把整条命令发往当前会话并记录历史。
+// runCommand 把整条命令发往会话并记录历史。
+// 广播模式（Alt+A）下发往所有已连接会话，否则只发当前会话。
 func (m *Model) runCommand(cmd string) {
 	s := m.activeSession()
 	if s == nil {
 		m.setMsg("尚未连接到服务器")
 		return
 	}
-	if s.State() != 1 {
+	if m.broadcast {
+		targets := m.connectedSessions()
+		if len(targets) == 0 {
+			m.setMsg("没有已连接的会话，无法广播")
+			return
+		}
+		m.dispatch(cmd, targets)
+		return
+	}
+	if s.State() != remotessh.StateConnected {
 		m.setMsg("会话当前不可写（" + s.State().String() + "），可按 Ctrl+R 重连")
 		return
 	}
-	_ = s.Write([]byte(cmd + "\r"))
-	m.trackCwd(cmd)
-	m.st.AddHistory(cmd, s.Conn.Host)
+	m.dispatch(cmd, []*remotessh.Session{s})
+}
+
+// connectedSessions 返回所有可写会话。
+func (m *Model) connectedSessions() []*remotessh.Session {
+	out := make([]*remotessh.Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.State() == remotessh.StateConnected {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// broadcastTargets 返回广播会覆盖的会话数（供状态栏显示）。
+func (m *Model) broadcastTargets() int { return len(m.connectedSessions()) }
+
+// toggleBroadcast 切换广播模式（Alt+A）。
+func (m *Model) toggleBroadcast() tea.Cmd {
+	if m.broadcast {
+		m.broadcast = false
+		return m.setMsg("已退出广播模式")
+	}
+	n := m.broadcastTargets()
+	if n == 0 {
+		return m.setMsg("没有已连接的会话，无法进入广播模式")
+	}
+	m.broadcast = true
+	return m.setMsg(fmt.Sprintf("广播模式：命令将同时发往 %d 台主机（Alt+A 退出）", n))
+}
+
+// dispatch 先做危险命令检查，再真正下发。
+func (m *Model) dispatch(cmd string, targets []*remotessh.Session) {
+	reason := risky(cmd)
+	if reason == "" {
+		m.deliver(cmd, targets)
+		return
+	}
+	var names []string
+	for _, s := range targets {
+		names = append(names, s.Label())
+	}
+	msg := "命令被判定为高风险操作：" + reason + "\n命令：" + cmd
+	if len(targets) > 1 {
+		msg += "\n将同时发往 " + fmt.Sprintf("%d", len(targets)) + " 台主机：\n  " + strings.Join(names, "、")
+		msg += "\n\n注意：sudo 口令会同时发往全部主机，并留在各自的 shell 历史里。"
+	}
+	targetsCopy := targets
+	d := newConfirmDialog("危险命令确认", msg, func(m *Model, _ []string) {
+		m.deliver(cmd, targetsCopy)
+	})
+	d.strictConfirm = true // 只认 Enter，避免顺手敲 y
+	d.onCancel = func(m *Model) { m.setMsg("已取消，命令未发送") }
+	m.dlg = d
+}
+
+// deliver 真正把命令写进目标会话的 stdin。
+func (m *Model) deliver(cmd string, targets []*remotessh.Session) {
+	for _, s := range targets {
+		_ = s.Write([]byte(cmd + "\r"))
+	}
+	if len(targets) == 1 {
+		m.trackCwd(cmd)
+		m.st.AddHistory(cmd, targets[0].Conn.Host)
+	} else {
+		// 广播只记一条历史，避免把同一条命令刷进历史面板 N 次
+		m.st.AddHistory(cmd, fmt.Sprintf("广播(%d 台)", len(targets)))
+	}
 	_ = m.st.Save()
 	m.refresh()
+	if len(targets) > 1 {
+		m.setMsg(fmt.Sprintf("已发往 %d 台主机：%s", len(targets), cmd))
+	}
+}
+
+// ---------- 危险命令判定 ----------
+
+// risky 判断命令是否属于「误执行代价极高」的操作，返回命中原因；安全则返回 ""。
+//
+// 不用简单正则的原因：正则既会误伤（echo a > f、cat reboot.log 都会被拦），
+// 又会漏判（rm -rf /*、dd of=/dev/sda、chmod -R 777 / 都绕得过去）。
+// 这里按 shell 语义分段，再按「命令 + 参数 + 目标」判定。
+func risky(cmd string) string {
+	for _, seg := range splitShell(cmd) {
+		if reason := riskyRedirect(seg); reason != "" {
+			return reason
+		}
+		fields := stripPrefixes(strings.Fields(seg))
+		if len(fields) == 0 {
+			continue
+		}
+		prog := fields[0]
+		args := fields[1:]
+		switch prog {
+		case "rm":
+			if hasFlag(args, "r", "R", "recursive") && targetsCritical(args) {
+				return "递归删除根目录或系统目录"
+			}
+		case "chmod", "chown":
+			if hasFlag(args, "R") && targetsCritical(args) {
+				return "递归修改根目录/系统目录的权限或属主"
+			}
+		case "mkfs", "mkfs.ext4", "mkfs.xfs", "mkfs.vfat", "mkswap":
+			return "格式化文件系统"
+		case "dd":
+			for _, a := range args {
+				if strings.HasPrefix(a, "of=/dev/") {
+					return "dd 直接写块设备"
+				}
+			}
+		case "shutdown", "reboot", "poweroff", "halt":
+			return "关机或重启主机"
+		case "init":
+			if len(args) > 0 && (args[0] == "0" || args[0] == "6") {
+				return "关机或重启主机"
+			}
+		case "systemctl":
+			if len(args) > 0 && (args[0] == "stop" || args[0] == "disable" || args[0] == "mask") {
+				return "停止 / 禁用系统服务"
+			}
+		case "pkill", "killall":
+			return "按名字批量杀进程"
+		case "iptables", "ip6tables", "nft":
+			return "修改防火墙规则"
+		case "userdel", "groupdel":
+			return "删除用户 / 用户组"
+		}
+	}
+	return ""
+}
+
+// riskyRedirect 检查重定向目标是否指向块设备或系统目录。
+// 只拦「覆盖块设备 / 系统目录」这类不可逆写入，echo a > f 不受影响。
+func riskyRedirect(seg string) string {
+	for _, op := range []string{">", ">>", ">|"} {
+		idx := strings.Index(seg, op)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(seg[idx+len(op):])
+		if rest == "" {
+			continue
+		}
+		fields := strings.Fields(rest)
+		target := fields[0]
+		if strings.HasPrefix(target, "/dev/sd") || strings.HasPrefix(target, "/dev/nvme") ||
+			strings.HasPrefix(target, "/dev/vd") || strings.HasPrefix(target, "/dev/xvd") {
+			return "重定向覆盖块设备"
+		}
+		if targetsCritical([]string{target}) {
+			return "重定向覆盖系统文件"
+		}
+	}
+	return ""
+}
+
+// splitShell 按 ; && || | 把命令行切成单条命令。
+func splitShell(cmd string) []string {
+	repl := strings.NewReplacer("&&", "\x00", "||", "\x00", ";", "\x00", "|", "\x00")
+	out := strings.Split(repl.Replace(cmd), "\x00")
+	for i := range out {
+		out[i] = strings.TrimSpace(out[i])
+	}
+	return out
+}
+
+// stripPrefixes 剥掉 sudo / env / nice 等前缀及其选项，露出真正的命令。
+func stripPrefixes(fields []string) []string {
+	for len(fields) > 0 {
+		switch fields[0] {
+		case "sudo", "nice", "nohup", "command", "exec", "time":
+			fields = fields[1:]
+			for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+				fields = fields[1:]
+			}
+		case "env":
+			fields = fields[1:]
+			for len(fields) > 0 && strings.Contains(fields[0], "=") {
+				fields = fields[1:]
+			}
+		default:
+			return fields
+		}
+	}
+	return fields
+}
+
+// hasFlag 判断参数里是否带指定开关（支持 -rf 这种合并写法）。
+func hasFlag(args []string, names ...string) bool {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") || a == "--" {
+			continue
+		}
+		body := strings.TrimLeft(a, "-")
+		for _, n := range names {
+			if len(n) == 1 {
+				if strings.Contains(body, n) {
+					return true
+				}
+			} else if body == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// targetsCritical 判断参数里是否出现根目录 / 系统目录 / 家目录。
+func targetsCritical(args []string) bool {
+	for _, a := range args {
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		switch a {
+		case "/", "/*", "~", "$HOME", "${HOME}", "/root", "/home":
+			return true
+		}
+		for _, p := range []string{"/etc", "/usr", "/var", "/boot", "/bin", "/sbin", "/lib", "/opt", "/sys", "/proc", "/dev"} {
+			if a == p || strings.HasPrefix(a, p+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (m *Model) closeActiveSession() {

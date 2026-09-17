@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"sshtool/internal/keytool"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
+	"sshtool/internal/vt"
 )
 
 // 焦点枚举：连接 → 收藏 → 历史 → 终端。
@@ -61,6 +63,26 @@ type Model struct {
 
 	cwd      string       // 远端当前工作目录（命令行 cd 解析得到的兜底值）
 	fsEvents chan fsEvent // 文件编辑自动回传的事件通道
+
+	hostKeyQueue []hostKeyAsk // 待确认的主机指纹询问（对话框是单例，必须排队）
+
+	// 终端文本选择（Alt+S）：坐标为终端视口坐标，左上角 0,0
+	selMode  bool
+	selOn    bool // 是否已按下起点
+	selCX    int  // 光标位置
+	selCY    int
+	selAX    int // 选区起点
+	selAY    int
+	selDrag  bool   // 鼠标正在拖选
+	lastCopy string // 最近一次复制的内容（OSC52 只能写不能读，粘贴用它兜底）
+
+	// 回滚缓冲搜索（Alt+/）
+	searchMode  bool
+	searchQuery string
+	hits        []vt.Hit
+	hitIdx      int
+
+	broadcast bool // 广播模式：命令行发往所有已连接会话
 
 	lastClickAt  time.Time
 	lastClickKey string
@@ -349,6 +371,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.msg = ""
 		}
 		return m, nil
+
+	case clipboardMsg:
+		switch {
+		case msg.ok:
+			return m, m.setMsg("已复制到系统剪贴板")
+		case msg.path != "":
+			return m, m.setMsg("终端不支持剪贴板，已保存到 " + msg.path)
+		default:
+			return m, m.setMsg("复制失败：" + msg.err)
+		}
 	}
 	return m, nil
 }
@@ -384,11 +416,19 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 				m.refreshSessions()
 			})
 		}
+	case remotessh.EventNeedHostKey:
+		// 未知主机 / 指纹变更：交给用户决策，队列保证并发询问不丢单。
+		m.enqueueHostKey(ev.SessionID, ev.Err)
 	case remotessh.EventError:
+		// 指纹变更等无法决策的错误已经在 EventNeedHostKey 里提示过，避免重复刷屏。
 		if ev.Err != nil {
-			m.setMsg("连接失败：" + ev.Err.Error())
+			var hke *remotessh.HostKeyError
+			if !errors.As(ev.Err, &hke) {
+				m.setMsg("连接失败：" + ev.Err.Error())
+			}
 		}
 	case remotessh.EventDisconnected:
+		m.resetTermModes()
 		m.refreshSessions()
 	}
 	m.refreshSessions()
@@ -397,6 +437,8 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 // applyTermSize 把布局算出的终端尺寸广播给所有会话。
 func (m *Model) applyTermSize() {
 	l := m.computeLayout()
+	// 尺寸变了，选区坐标与搜索高亮都失效，先复位再广播尺寸
+	m.resetTermModes()
 	m.mgr.ResizeAll(l.termCol, l.termRow)
 }
 

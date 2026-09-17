@@ -88,6 +88,17 @@ type Terminal struct {
 
 	title string
 
+	// hiLine 是需要高亮的缓冲区行号（-1 表示无），用于搜索命中的当前行。
+	hiLine int
+
+	// 选区：坐标为视口坐标（左上角 0,0），selOn 为 false 时其余字段无意义。
+	// 用视口坐标而不是缓冲区坐标，配合 frozen 才能在「远端持续输出」时保持稳定。
+	selOn        bool
+	selAX, selAY int
+	selBX, selBY int
+	frozen       bool // 选区激活时冻结视口，避免新输出把选中的行顶走
+	frozenTop    int  // 冻结时视口第一行对应的缓冲区行号
+
 	scrollOffset int
 
 	pending []byte // 未完成的转义序列或 UTF-8 字节
@@ -116,6 +127,7 @@ func New(cols, rows int, scrollback int) *Terminal {
 		cursorVisible:   true,
 		top:             0,
 		bottom:          rows,
+		hiLine:          -1, // -1 表示没有高亮行
 	}
 	t.clearScreen()
 	return t
@@ -159,8 +171,19 @@ func (t *Terminal) Cursor() (x, y int, visible bool) {
 func (t *Terminal) ScrollBy(dy int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.scrollOffset -= dy
 	max := t.history.len()
+	if t.frozen {
+		// 冻结期间 scrollOffset 由 frozenTop 推导，这里改的是 frozenTop。
+		t.frozenTop -= dy
+		if t.frozenTop < 0 {
+			t.frozenTop = 0
+		}
+		if t.frozenTop > max {
+			t.frozenTop = max
+		}
+		return
+	}
+	t.scrollOffset -= dy
 	if t.scrollOffset < 0 {
 		t.scrollOffset = 0
 	}
@@ -173,13 +196,17 @@ func (t *Terminal) ScrollBy(dy int) {
 func (t *Terminal) ScrollOffset() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.scrollOffset
+	return t.history.len() - t.viewTopLocked()
 }
 
 // ScrollToBottom 回到最新输出。
 func (t *Terminal) ScrollToBottom() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.frozen {
+		t.frozenTop = t.history.len()
+		return
+	}
 	t.scrollOffset = 0
 }
 
@@ -195,6 +222,213 @@ func (t *Terminal) Title() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.title
+}
+
+// ---------- 文本提取与检索 ----------
+
+// maxFindHits 是 Find 返回的最大命中数：回滚缓冲可能有几千行，
+// 全量返回既没必要也会让 UI 侧反复维护一个大切片。
+const maxFindHits = 2000
+
+// Hit 是 Find 的一个命中项。
+type Hit struct {
+	Line int    // 缓冲区行号（0 = 回滚缓冲中最旧的一行）
+	Text string // 命中时的整行文本
+}
+
+// BufferLen 返回缓冲区总行数（回滚缓冲 + 当前屏幕）。
+func (t *Terminal) BufferLen() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.history.len() + t.rows
+}
+
+// LineText 返回缓冲区第 idx 行的纯文本（去掉宽字符占位格与行尾空格）。
+func (t *Terminal) LineText(idx int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lineTextLocked(t.lineCellsLocked(idx))
+}
+
+// lineTextLocked 把一行单元格转成纯文本。
+func (t *Terminal) lineTextLocked(line []Cell) string {
+	var b strings.Builder
+	for _, c := range line {
+		if c.R == 0 || c.Attr.Hidden {
+			continue
+		}
+		b.WriteRune(c.R)
+	}
+	return strings.TrimRight(b.String(), " ")
+}
+
+// Text 取矩形区域的文本，坐标为**当前视口**坐标（左上角 0,0），闭区间。
+// 起止点顺序会被自动规范化，越界部分自动裁剪。
+func (t *Terminal) Text(x0, y0, x1, y1 int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if y0 > y1 || (y0 == y1 && x0 > x1) {
+		x0, y0, x1, y1 = x1, y1, x0, y0
+	}
+	top := t.viewTopLocked()
+	var b strings.Builder
+	for y := y0; y <= y1; y++ {
+		if y < 0 || y >= t.rows {
+			continue
+		}
+		var lb strings.Builder
+		col := 0
+		for _, c := range t.lineCellsLocked(top + y) {
+			if c.Attr.Hidden {
+				continue
+			}
+			w := c.W
+			if w < 1 {
+				w = 1
+			}
+			if c.R != 0 && col >= x0 && col <= x1 {
+				lb.WriteRune(c.R)
+			}
+			col += w
+			if col > x1 {
+				break
+			}
+		}
+		if y > y0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.TrimRight(lb.String(), " "))
+	}
+	return b.String()
+}
+
+// Find 在回滚缓冲 + 当前屏幕中查找子串，按缓冲区顺序返回命中。
+//
+// 命中项带上了命中时的行文本：回滚缓冲是环形的，写满之后所有行号会整体左移，
+// 调用方可以用 Text 校验行号是否仍然有效，失效时重新 Find 即可。
+func (t *Terminal) Find(sub string, ignoreCase bool) []Hit {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if sub == "" {
+		return nil
+	}
+	needle := sub
+	if ignoreCase {
+		needle = strings.ToLower(needle)
+	}
+	total := t.history.len() + t.rows
+	out := make([]Hit, 0, 16)
+	for i := 0; i < total && len(out) < maxFindHits; i++ {
+		text := t.lineTextLocked(t.lineCellsLocked(i))
+		hay := text
+		if ignoreCase {
+			hay = strings.ToLower(hay)
+		}
+		if strings.Contains(hay, needle) {
+			out = append(out, Hit{Line: i, Text: text})
+		}
+	}
+	return out
+}
+
+// ScrollToLine 把缓冲区第 idx 行滚到视口中间，返回该行是否存在。
+// 与 ScrollBy 不同，这里一次性在锁内完成计算，不会出现「读到旧偏移再叠加」的竞态。
+func (t *Terminal) ScrollToLine(idx int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	maxTop := t.history.len()
+	target := idx - t.rows/2
+	if target < 0 {
+		target = 0
+	}
+	if target > maxTop {
+		target = maxTop
+	}
+	if t.frozen {
+		t.frozenTop = target
+	} else {
+		t.scrollOffset = maxTop - target
+	}
+	return idx >= 0 && idx < maxTop+t.rows
+}
+
+// ---------- 选区 ----------
+
+// SetSelection 设置选区（视口坐标，闭区间），并在首次调用时冻结视口。
+//
+// 冻结是必要的：远端还在持续输出，若不冻结，新行会把选中的内容顶出视口，
+// 用户松手时复制到的是另一段文本。退出选区（ClearSelection）才恢复跟随。
+func (t *Terminal) SetSelection(ax, ay, bx, by int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.selOn = true
+	t.selAX, t.selAY = ax, ay
+	t.selBX, t.selBY = bx, by
+	if !t.frozen {
+		t.frozen = true
+		t.frozenTop = t.viewTopLocked()
+	}
+}
+
+// ClearSelection 清除选区并恢复跟随最新输出。
+func (t *Terminal) ClearSelection() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.selOn = false
+	if t.frozen {
+		// 解冻时把当前视口位置换算回 scrollOffset，避免画面突然跳到底部。
+		t.scrollOffset = t.history.len() - t.frozenTop
+		if t.scrollOffset < 0 {
+			t.scrollOffset = 0
+		}
+		if t.scrollOffset > t.history.len() {
+			t.scrollOffset = t.history.len()
+		}
+		t.frozen = false
+	}
+}
+
+// SelectionActive 是否存在选区（同时意味着视口处于冻结状态）。
+func (t *Terminal) SelectionActive() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.selOn
+}
+
+// selRangeForRowLocked 返回第 rowY 视口行上被选中的列区间 [x0, x1]，未命中返回 false。
+func (t *Terminal) selRangeForRowLocked(rowY int) (int, int, bool) {
+	if !t.selOn {
+		return 0, 0, false
+	}
+	aY, aX, bY, bX := t.selAY, t.selAX, t.selBY, t.selBX
+	if aY > bY || (aY == bY && aX > bX) {
+		aY, aX, bY, bX = bY, bX, aY, aX
+	}
+	if rowY < aY || rowY > bY {
+		return 0, 0, false
+	}
+	x0, x1 := 0, t.cols-1
+	if aY == bY {
+		x0, x1 = aX, bX
+	} else if rowY == aY {
+		x0 = aX
+	} else if rowY == bY {
+		x1 = bX
+	}
+	if x0 < 0 {
+		x0 = 0
+	}
+	if x1 > t.cols-1 {
+		x1 = t.cols - 1
+	}
+	return x0, x1, true
+}
+
+// SetHighlight 高亮缓冲区第 idx 行（传 -1 取消）。
+func (t *Terminal) SetHighlight(idx int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.hiLine = idx
 }
 
 // Reset 全清：回到默认属性、光标归位、清空 scrollback。
@@ -216,6 +450,10 @@ func (t *Terminal) resetLocked() {
 	t.saved = cursorState{}
 	t.altState = screenState{}
 	t.altOn = false
+	t.hiLine = -1
+	t.selOn = false
+	t.frozen = false
+	t.frozenTop = 0
 	t.title = ""
 	t.pending = nil
 	t.clearScreen()
@@ -292,33 +530,57 @@ func (t *Terminal) Render() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	out := make([]string, t.rows)
-	maxTop := t.history.len()
-	top := maxTop - t.scrollOffset
-	if top < 0 {
-		top = 0
-	}
-	if top > maxTop {
-		top = maxTop
-	}
+	top := t.viewTopLocked()
 	for y := 0; y < t.rows; y++ {
 		idx := top + y
-		var line []Cell
-		switch {
-		case idx < maxTop:
-			line = t.history.get(idx)
-		default:
-			sy := idx - maxTop
-			if sy >= 0 && sy < t.rows {
-				line = t.screen[sy*t.cols : (sy+1)*t.cols]
-			}
-		}
-		out[y] = t.renderLine(line)
+		out[y] = t.renderLine(t.lineCellsLocked(idx), idx)
 	}
 	return out
 }
 
+// viewTopLocked 返回当前视口第一行对应的缓冲区行号（0 = 回滚缓冲最旧的一行）。
+//
+// 全终端只有这一个地方做「视口 ↔ 缓冲区」的换算，避免各处各写一份公式
+// （scrollOffset 是「距底部的行数」，方向很容易搞反）。
+func (t *Terminal) viewTopLocked() int {
+	top := t.history.len() - t.scrollOffset
+	if t.frozen {
+		top = t.frozenTop
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > t.history.len() {
+		top = t.history.len()
+	}
+	return top
+}
+
+// lineCellsLocked 取缓冲区第 idx 行的单元格；idx < history.len() 取回滚缓冲，否则取屏幕行。
+func (t *Terminal) lineCellsLocked(idx int) []Cell {
+	if idx < 0 {
+		return nil
+	}
+	maxTop := t.history.len()
+	if idx < maxTop {
+		return t.history.get(idx)
+	}
+	sy := idx - maxTop
+	if sy >= 0 && sy < t.rows {
+		return t.screen[sy*t.cols : (sy+1)*t.cols]
+	}
+	return nil
+}
+
 // renderLine 把一行（长度可能不等于 Cols()）渲染成宽度严格等于 Cols() 的字符串。
-func (t *Terminal) renderLine(line []Cell) string {
+// bufIdx 是该行在缓冲区中的行号，用于命中高亮与选区反显。
+func (t *Terminal) renderLine(line []Cell, bufIdx int) string {
+	hi := bufIdx >= 0 && bufIdx == t.hiLine
+	// 选区：按视口行换算，命中列整格反显（不加粗，与搜索命中行区分）
+	selX0, selX1, inSel := 0, 0, false
+	if t.selOn && bufIdx >= 0 {
+		selX0, selX1, inSel = t.selRangeForRowLocked(bufIdx - t.viewTopLocked())
+	}
 	var b strings.Builder
 	b.WriteString("\x1b[0m")
 	cur := DefaultAttr
@@ -326,6 +588,19 @@ func (t *Terminal) renderLine(line []Cell) string {
 		c := blankCell
 		if x < len(line) {
 			c = line[x]
+		}
+		if hi {
+			// 命中行整行反显（同时加粗，便于和选区区分）。
+			// 在 Cell 属性层做，宽度天然不变，也不必担心外层再做 ANSI 字符串裁切。
+			a := c.Attr
+			a.Reverse = true
+			a.Bold = true
+			c.Attr = a
+		}
+		if inSel && x >= selX0 && x <= selX1 {
+			a := c.Attr
+			a.Reverse = true
+			c.Attr = a
 		}
 		if c.Attr != cur {
 			b.WriteString(c.Attr.SGR())
@@ -372,6 +647,11 @@ func (t *Terminal) pushHistory(src []Cell) {
 	}
 	cp := make([]Cell, len(src))
 	copy(cp, src)
+	// 环形缓冲写满后再 push 会覆盖最旧的一行，此后所有缓冲区行号整体左移一格。
+	// 冻结中的视口必须跟着左移，否则用户选中的行会悄悄变成另一行。
+	if t.frozen && t.history.len() >= t.scrollbackLimit && t.frozenTop > 0 {
+		t.frozenTop--
+	}
 	t.history.push(cp, t.scrollbackLimit)
 }
 

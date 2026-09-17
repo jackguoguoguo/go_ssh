@@ -14,6 +14,7 @@ const (
 	EventDisconnected                  // 连接断开
 	EventError                         // 出错
 	EventNeedSecret                    // 需要密码 / 私钥口令
+	EventNeedHostKey                   // 主机指纹需要确认（未知主机）
 )
 
 // Event 会话事件，由 Manager 统一投递给 UI。

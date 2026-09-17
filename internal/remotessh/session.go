@@ -1,6 +1,7 @@
 package remotessh
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ type Session struct {
 	cols    int
 	rows    int
 	closed  bool
+	secret  string // 本次连接使用的密码 / 私钥口令，仅内存保存，用于重连时免重复询问
 
 	outCh  chan<- string // 全局输出通知通道（非阻塞，满了就丢弃）
 	events chan<- Event  // 全局事件通道
@@ -186,10 +188,21 @@ func (s *Session) Close() {
 	}
 }
 
+// Secret 返回本次连接使用的密码 / 私钥口令（仅内存，不落盘），供重连复用。
+func (s *Session) Secret() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.secret
+}
+
 // dial 在后台协程中完成建连、申请 PTY 并启动 shell。
 func (s *Session) dial(secret string) {
 	addr := addrOf(s.Conn)
 	user := userOf(s.Conn)
+
+	s.mu.Lock()
+	s.secret = secret
+	s.mu.Unlock()
 
 	methods, err := authMethods(s.Conn, secret)
 	if err != nil {
@@ -379,6 +392,13 @@ func (s *Session) fail(err error) {
 	s.mu.Unlock()
 	if s.client != nil {
 		_ = s.client.Close()
+	}
+	var hke *HostKeyError
+	if errors.As(err, &hke) {
+		// 指纹问题不是「连不上」，而是「要不要信」：交给 UI 询问用户，
+		// 非交互调用方（RunOnce）则表现为一次明确的失败。
+		s.emit(Event{SessionID: s.ID, Kind: EventNeedHostKey, Err: err})
+		return
 	}
 	if err == ErrNeedPassphrase || err == ErrNeedPassword {
 		s.emit(Event{SessionID: s.ID, Kind: EventNeedSecret, Err: err})

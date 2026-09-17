@@ -1,6 +1,10 @@
 package remotessh
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +106,56 @@ func TestOpenWritesToTerminal(t *testing.T) {
 	}
 	if s.State() != StateClosed {
 		t.Fatalf("关闭后状态 = %v，期望 StateClosed", s.State())
+	}
+}
+
+// TestUnknownHostNeedsTrustThenReconnect 覆盖「陌生主机 → 询问 → 信任 → 重连」全链路。
+func TestUnknownHostNeedsTrustThenReconnect(t *testing.T) {
+	srv := testutil.StartSSHServer(t)
+
+	// StartSSHServer 会自动信任自己（否则既有测试全部连不上），
+	// 这里把记录清空，模拟首次连接一台陌生主机。
+	p := os.Getenv(KnownHostsEnv)
+	if p == "" {
+		t.Fatal("测试 known_hosts 未设置")
+	}
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	defer mgr.CloseAll()
+
+	conn := store.Connection{
+		ID: "trust-1", Host: srv.Host, Port: srv.Port,
+		User: "test", AuthType: store.AuthPassword, Password: "pass",
+	}
+	first, _ := mgr.Open(conn, "pass", 40, 8, 100)
+
+	ev := waitEvent(t, mgr, EventNeedHostKey, 10*time.Second)
+	var hke *HostKeyError
+	if !errors.As(ev.Err, &hke) {
+		t.Fatalf("期望 *HostKeyError，实际 %v", ev.Err)
+	}
+	if hke.Changed {
+		t.Error("清空记录后应视为未知主机，而非指纹变更")
+	}
+	if first.State() != StateError {
+		t.Errorf("未确认指纹时状态应为 StateError，实际 %v", first.State())
+	}
+
+	// 模拟用户在对话框里点「信任并写入 known_hosts」
+	if err := TrustHost(net.JoinHostPort(srv.Host, fmt.Sprintf("%d", srv.Port)), hke.Key); err != nil {
+		t.Fatalf("TrustHost 失败: %v", err)
+	}
+	// 重连应复用已保存的口令，不再弹密码框
+	second := mgr.Reopen(conn, first.Secret(), 40, 8, 100)
+	waitEvent(t, mgr, EventConnected, 10*time.Second)
+	if second.State() != StateConnected {
+		t.Fatalf("信任后重连应成功，实际状态 %v（err=%v）", second.State(), second.Err())
+	}
+	if second.Secret() != "pass" {
+		t.Errorf("重连应复用原口令，实际 %q", second.Secret())
 	}
 }
 

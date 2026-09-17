@@ -49,6 +49,10 @@ type dlg struct {
 	onOK     func(m *Model, values []string)
 	onCancel func(m *Model)
 
+	// strictConfirm 为 true 时，确认框只认 Enter，不认 y/Y。
+	// 用于主机指纹这类「按错就是安全事故」的确认，避免顺手敲 y 通过。
+	strictConfirm bool
+
 	// dlgPick 专用
 	items   []pickItem
 	cursor  int
@@ -524,7 +528,11 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
 		return true
 
 	case dlgConfirm:
-		if msg.Type == tea.KeyEnter || (len(msg.Runes) == 1 && (msg.Runes[0] == 'y' || msg.Runes[0] == 'Y')) {
+		yes := msg.Type == tea.KeyEnter
+		if !d.strictConfirm && len(msg.Runes) == 1 && (msg.Runes[0] == 'y' || msg.Runes[0] == 'Y') {
+			yes = true
+		}
+		if yes {
 			fn := d.onOK
 			m.dlg = nil
 			if fn != nil {
@@ -533,7 +541,8 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) bool {
 			return true
 		}
 		if len(msg.Runes) == 1 && (msg.Runes[0] == 'n' || msg.Runes[0] == 'N') {
-			m.dlg = nil
+			// 走 closeDialog，确保 onCancel 被触发（指纹询问依赖它推进队列）
+			m.closeDialog()
 			return true
 		}
 		return true
@@ -650,6 +659,9 @@ func helpBody() []string {
 		"  Ctrl+O          远端文件浏览器：浏览/打开/编辑服务器上的文件",
 		"  Ctrl+P          把输入行内容加入收藏",
 		"  Ctrl+X          进入命令行（可编辑后回车执行）",
+		"  Alt+S           终端文本选择：方向键移动，Space 定起点，Enter 复制，p 粘贴",
+		"  Alt+/           在回滚缓冲内搜索（回车确认）；Alt+] / Alt+[ 跳下/上一处",
+		"  Alt+A           广播模式：命令行输入同时发往所有已连接会话",
 		"  Tab / Shift+Tab 切换焦点（连接→收藏→历史→终端）",
 		"  Enter           连接面板=连接；收藏/历史=填入并立即执行",
 		"  /               过滤当前面板；Esc 取消过滤",
@@ -661,6 +673,10 @@ func helpBody() []string {
 		"",
 		"  鼠标：点击标签切换会话 · 点击标签 × 关闭会话 · 点击列表项选中",
 		"        双击列表项（或回车）执行 · 滚轮滚动列表与终端",
+		"        终端区域按下并拖动 = 选择文本，松开即复制",
+		"",
+		"  安全：首次连接陌生主机会弹出指纹确认；指纹与 known_hosts 不符将拒绝连接。",
+		"        rm -rf /、dd of=/dev/*、shutdown 等高危命令会二次确认后再执行。",
 		"",
 		"  配置文件：" + configPathHint,
 	}

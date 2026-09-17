@@ -17,7 +17,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// 全局：退出
 	if msg.Type == tea.KeyCtrlQ {
 		if m.dlg != nil {
-			m.dlg = nil
+			// 走 closeDialog 以触发 onCancel：指纹确认框依赖取消回调推进队列。
+			m.closeDialog()
 			return m, nil
 		}
 		m.dlg = newConfirmDialog("退出 sshtool", "将断开全部会话，确定退出吗？", func(m *Model, _ []string) {
@@ -51,10 +52,29 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.armOutput()
 	}
 
+	// 全局：Alt+字母功能键。
+	// 键位刻意避开了被远端高频占用的组合：
+	//   Ctrl+A（bash 行首 / GNU screen 前缀）、Ctrl+F（less、vim 翻页、readline）、
+	//   Alt+N/Alt+P（bash 的 M-n/M-p 历史搜索），所以这里统一用 Alt+S/A///[/]。
+	if msg.Alt && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 's':
+			return m, m.toggleSelectMode()
+		case 'a':
+			return m, m.toggleBroadcast()
+		case '/':
+			return m, m.openSearch()
+		case '[':
+			return m, m.gotoHit(-1)
+		case ']':
+			return m, m.gotoHit(1)
+		}
+	}
+
 	// 全局：帮助
 	if msg.Type == tea.KeyCtrlH || msg.Type == tea.KeyF1 {
 		if m.dlg != nil {
-			m.dlg = nil
+			m.closeDialog()
 			return m, nil
 		}
 		m.openHelp()
@@ -72,9 +92,14 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.armOutput())
 	}
 
+	// 选择模式：按键全部用于移动选区，一律不透传给远端
+	if m.selMode {
+		return m, tea.Batch(m.selectKey(msg), m.armOutput())
+	}
+
 	// 命令行编辑模式下，除少数功能键外全部交给输入行处理，
 	// 避免 Ctrl+W（删除单词）等编辑键被全局快捷键抢走。
-	if m.inputMode && m.focus == focusTerm {
+	if (m.inputMode || m.searchMode) && m.focus == focusTerm {
 		switch msg.Type {
 		case tea.KeyCtrlP, tea.KeyCtrlX, tea.KeyCtrlH, tea.KeyTab, tea.KeyShiftTab, tea.KeyEsc:
 			// 继续走全局逻辑
@@ -222,13 +247,24 @@ func (m *Model) panelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // termKey 处理终端区域的按键。
 func (m *Model) termKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// 命令行编辑模式
-	if m.inputMode {
+	// 命令行编辑模式 / 搜索输入模式：两者共用输入行，但提交行为不同
+	if m.inputMode || m.searchMode {
 		switch msg.Type {
 		case tea.KeyEsc:
+			if m.searchMode {
+				// 退出搜索并清除高亮（关键字保留，便于再次进入继续查找）
+				m.searchMode = false
+				m.input = nil
+				m.inputPos = 0
+				m.clearHits()
+				return m, nil
+			}
 			m.inputMode = false
 			return m, nil
 		case tea.KeyEnter:
+			if m.searchMode {
+				return m, tea.Batch(m.runSearch(), m.armOutput())
+			}
 			cmd := strings.TrimSpace(string(m.input))
 			m.input = nil
 			m.inputPos = 0
@@ -281,9 +317,15 @@ func (m *Model) termKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputPos = p
 			return m, nil
 		case tea.KeyUp:
+			if m.searchMode {
+				return m, nil // 搜索输入不走命令历史
+			}
 			m.fillFromHistory(-1)
 			return m, nil
 		case tea.KeyDown:
+			if m.searchMode {
+				return m, nil
+			}
 			m.fillFromHistory(1)
 			return m, nil
 		}
@@ -466,6 +508,23 @@ func (m *Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// 拖选中的移动事件：终端区域才处理
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionMotion {
+		if m.selDrag {
+			if col, row, ok := m.termCellAt(x, y); ok {
+				m.updateMouseSelect(col, row)
+			}
+		}
+		// 非拖选状态直接丢弃：开启 all-motion 后事件量很大
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionRelease {
+		if m.selDrag {
+			return m, m.finishMouseSelect()
+		}
+		return m, nil
+	}
+
 	if msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
@@ -534,7 +593,22 @@ func (m *Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if y < inputY {
 		m.inputMode = false
 	}
+	// 输出区按下左键 = 开始拖选（松开时若拖出过区域则自动复制）
+	if col, row, ok := m.termCellAt(x, y); ok {
+		m.startMouseSelect(col, row)
+	}
 	return m, nil
+}
+
+// termCellAt 把屏幕坐标换算成终端视口内的列/行；不在输出区时返回 false。
+func (m *Model) termCellAt(x, y int) (col, row int, ok bool) {
+	l := m.computeLayout()
+	col = x - (l.term.x + 1)
+	row = y - (l.term.y + 1)
+	if col < 0 || col >= l.termCol || row < 0 || row >= l.termRow {
+		return 0, 0, false
+	}
+	return col, row, true
 }
 
 // dialogMouse 处理对话框内的点击。

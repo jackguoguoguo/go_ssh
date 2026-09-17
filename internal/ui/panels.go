@@ -402,6 +402,11 @@ func (m *Model) renderTerminal(l layout) string {
 		}
 	}
 
+	// 选择模式：把选择光标画出来，否则用户不知道自己选到哪了
+	if m.selMode && m.selCY >= 0 && m.selCY < len(lines) && m.selCX >= 0 && m.selCX < contentW {
+		lines[m.selCY] = highlightCell(lines[m.selCY], m.selCX, contentW)
+	}
+
 	// 命令行输入行
 	promptStyle := lipgloss.NewStyle().Foreground(cDim)
 	promptText := "> "
@@ -426,12 +431,29 @@ func (m *Model) renderTerminal(l layout) string {
 
 // renderStatus 渲染底部状态栏。
 func (m *Model) renderStatus(l layout) string {
+	// 模式态优先展示：这些状态下常驻提示比通用快捷键更有用，
+	// 也顺带解决「用户怎么知道有这些功能」的可发现性问题。
 	var left string
-	if m.msg != "" {
+	switch {
+	case m.selMode:
+		hint := " 选择模式 · 方向键移动 · Space 定起点 · Enter 复制 · p 粘贴 · Esc 退出"
+		if !m.selOn {
+			hint += "（Space 开始选择）"
+		}
+		left = lipgloss.NewStyle().Foreground(cOK).Bold(true).Render(hint)
+	case m.broadcast:
+		left = lipgloss.NewStyle().Foreground(cWarn).Bold(true).
+			Render(fmt.Sprintf(" [广播] 命令将发往 %d 台已连接主机 · Alt+A 退出 ", m.broadcastTargets()))
+	case m.searchMode:
+		left = lipgloss.NewStyle().Foreground(cOK).Bold(true).Render(" 搜索：输入关键字后回车 · Esc 取消")
+	case len(m.hits) > 0:
+		left = lipgloss.NewStyle().Foreground(cOK).Bold(true).
+			Render(fmt.Sprintf(" 命中 %d/%d · Alt+] 下一处 · Alt+[ 上一处 · Esc 清除", m.hitIdx+1, len(m.hits)))
+	case m.msg != "":
 		left = " " + m.msg
 		left = lipgloss.NewStyle().Foreground(cWarn).Render(left)
-	} else {
-		left = " Tab 焦点 · Enter 执行 · / 过滤 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+O 文件 · Ctrl+W 关闭 · PgUp 回滚 · Ctrl+H 帮助"
+	default:
+		left = " Tab 焦点 · Alt+S 选择复制 · Alt+/ 搜索 · Alt+A 广播 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+O 文件 · Ctrl+H 帮助"
 		left = styleHint.Render(left)
 	}
 	right := ""

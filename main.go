@@ -47,7 +47,9 @@ func main() {
 	model := ui.New(st, mgr)
 	p := tea.NewProgram(&model,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		// all-motion 用于支持「按下-拖动-松开」的终端拖选；
+		// 非拖选状态的 motion 事件在 keys.onMouse 里被直接丢弃，不会有额外开销。
+		tea.WithMouseAllMotion(),
 	)
 
 	if _, err := p.Run(); err != nil {

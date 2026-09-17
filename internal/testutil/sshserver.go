@@ -15,6 +15,7 @@ import (
 
 	"github.com/pkg/sftp"
 	sshx "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // POSIXShell 返回一个可用的 POSIX shell 路径；不可用时返回空串。
@@ -67,6 +68,7 @@ type SSHServer struct {
 	// authorized_keys，不会因为共享 HOME 而互相覆盖。
 	Home string
 	ln   net.Listener
+	pub  sshx.PublicKey // 主机公钥，供「信任本机测试服务端」使用
 }
 
 // StartSSHServer 启动一个进程内 SSH 服务端。
@@ -98,9 +100,13 @@ func StartSSHServer(t *testing.T) *SSHServer {
 		t.Fatal(err)
 	}
 
-	s := &SSHServer{ln: ln, Home: t.TempDir()}
+	s := &SSHServer{ln: ln, Home: t.TempDir(), pub: signer.PublicKey()}
 	addr := ln.Addr().(*net.TCPAddr)
 	s.Host, s.Port = addr.IP.String(), addr.Port
+
+	// 让测试也走真实的指纹校验路径：把本服务端的主机公钥写进测试专用的 known_hosts，
+	// 而不是让 remotessh 退化成不校验。
+	trustSelf(t, net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port)), s.pub)
 
 	go func() {
 		for {
@@ -113,6 +119,29 @@ func StartSSHServer(t *testing.T) *SSHServer {
 	}()
 	t.Cleanup(func() { _ = ln.Close() })
 	return s
+}
+
+// trustSelf 把本服务端的主机公钥写入测试专用的 known_hosts。
+//
+// 环境变量 SSHTOOL_KNOWN_HOSTS 与 remotessh.KnownHostsEnv 对应（这里不能引 remotessh 包，
+// 因为 remotessh 的内部测试要引 testutil，会形成循环依赖）。这样测试走的是真实指纹校验路径，
+// 又不会污染开发机的 ~/.ssh/known_hosts。
+func trustSelf(t *testing.T, addr string, key sshx.PublicKey) {
+	t.Helper()
+	p := os.Getenv("SSHTOOL_KNOWN_HOSTS")
+	if p == "" {
+		p = filepath.Join(t.TempDir(), "known_hosts")
+		t.Setenv("SSHTOOL_KNOWN_HOSTS", p)
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("写入测试 known_hosts 失败: %v", err)
+	}
+	defer f.Close()
+	line := knownhosts.Line([]string{knownhosts.Normalize(addr)}, key)
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatalf("写入测试 known_hosts 失败: %v", err)
+	}
 }
 
 // pathSep 用于拼接 PATH：Windows 用分号，其余平台用冒号。
