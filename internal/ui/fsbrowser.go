@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,11 +22,12 @@ type fsEvent struct {
 	err  string
 }
 
-// fsLoadedMsg 目录加载完成。
+// fsLoadedMsg 目录加载完成。note 为操作成功后的提示（如「已下载…」）。
 type fsLoadedMsg struct {
 	path    string
 	entries []remotessh.Entry
 	err     error
+	note    string
 }
 
 // fsSavedMsg 一次自动回传完成。
@@ -105,6 +107,36 @@ func (d *dlg) currentFsEntry() (remotessh.Entry, bool) {
 
 // fileKey 处理文件浏览器内的按键。
 func (m *Model) fileKey(d *dlg, msg tea.KeyMsg) {
+	// 目录加载 / 文件操作进行中：忽略按键，避免竞态。
+	if d.fsLoading {
+		return
+	}
+	// 参数输入态：所有按键用于编辑 fsInput（重命名 / 权限 / 新建目录 / 上传 / 下载）。
+	if d.fsOp != "" {
+		m.fsInputKey(d, msg)
+		return
+	}
+	// 删除二次确认态
+	if d.fsConfirmDel {
+		switch msg.Type {
+		case tea.KeyEnter, tea.KeyRunes:
+			if msg.Type == tea.KeyEnter || (len(msg.Runes) == 1 && (msg.Runes[0] == 'y' || msg.Runes[0] == 'Y')) {
+				d.fsConfirmDel = false
+				d.fsLoading = true
+				m.afterCmd = m.fsRemoveCmd(d, d.fsInputPath, d.fsInputIsDir)
+				return
+			}
+			d.fsConfirmDel = false
+			d.fsInputPath = ""
+			return
+		case tea.KeyEsc:
+			d.fsConfirmDel = false
+			d.fsInputPath = ""
+			return
+		}
+		return
+	}
+
 	switch msg.Type {
 	case tea.KeyUp:
 		if d.fsCursor > 0 {
@@ -164,12 +196,41 @@ func (m *Model) fileKey(d *dlg, msg tea.KeyMsg) {
 				m.openFileAction(d, e, true)
 			}
 			return
-		case d.fsFilter == "" && (r == 'u' || r == 'U'):
+		case d.fsFilter == "" && (r == 'u'):
 			m.fsNavigate(d, parentPath(d.fsPath))
 			return
 		case d.fsFilter == "" && (r == '~'):
 			if wd, err := d.fs.Getwd(); err == nil {
 				m.fsNavigate(d, wd)
+			}
+			return
+		// ---- 文件维护操作（仅无过滤时触发，避免与过滤输入冲突）----
+		case d.fsFilter == "" && (r == 'n'): // 新建目录
+			m.fsStartOp(d, "mkdir", "新建目录：", "", false)
+			return
+		case d.fsFilter == "" && (r == 'r'): // 重命名
+			if e, ok := d.currentFsEntry(); ok {
+				m.fsStartOp(d, "rename", "重命名为：", e.Name, e.IsDir)
+			}
+			return
+		case d.fsFilter == "" && (r == 'm'): // 改权限
+			if e, ok := d.currentFsEntry(); ok {
+				m.fsStartOp(d, "chmod", "权限(八进制，如 644)：", "", e.IsDir)
+			}
+			return
+		case d.fsFilter == "" && (r == 'd'): // 下载到本地
+			if e, ok := d.currentFsEntry(); ok && !e.IsDir {
+				m.fsStartOp(d, "download", "下载到本地路径：", e.Name, false)
+			}
+			return
+		case d.fsFilter == "" && (r == 'U'): // 上传本地文件到当前目录
+			m.fsStartOp(d, "upload", "上传本地文件：", "", false)
+			return
+		case d.fsFilter == "" && (r == 'D'): // 删除（二次确认）
+			if e, ok := d.currentFsEntry(); ok {
+				d.fsConfirmDel = true
+				d.fsInputPath = joinPath(d.fsPath, e.Name)
+				d.fsInputIsDir = e.IsDir
 			}
 			return
 		case r >= 0x20:
@@ -179,6 +240,170 @@ func (m *Model) fileKey(d *dlg, msg tea.KeyMsg) {
 			return
 		}
 	}
+}
+
+// fsStartOp 进入某文件操作的参数输入态。
+func (m *Model) fsStartOp(d *dlg, op, label, prefill string, isDir bool) {
+	d.fsOp = op
+	d.fsInputLabel = label
+	d.fsInput = prefill
+	d.fsInputIsDir = isDir
+	if e, ok := d.currentFsEntry(); ok {
+		d.fsInputPath = joinPath(d.fsPath, e.Name)
+	} else {
+		d.fsInputPath = ""
+	}
+}
+
+// fsInputKey 处理参数输入态的按键（仅 esc/enter/backspace/可打印字符）。
+func (m *Model) fsInputKey(d *dlg, msg tea.KeyMsg) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		d.fsOp, d.fsInput, d.fsInputLabel = "", "", ""
+	case tea.KeyEnter:
+		m.fsSubmitOp(d)
+	case tea.KeyBackspace:
+		if len(d.fsInput) > 0 {
+			d.fsInput = d.fsInput[:len(d.fsInput)-1]
+		}
+	default:
+		if len(msg.Runes) == 1 && msg.Runes[0] >= 0x20 {
+			d.fsInput += string(msg.Runes[0])
+		}
+	}
+}
+
+// fsSubmitOp 提交参数输入态，根据 fsOp 执行对应文件操作。
+func (m *Model) fsSubmitOp(d *dlg) {
+	op := d.fsOp
+	input := strings.TrimSpace(d.fsInput)
+	d.fsOp, d.fsInput, d.fsInputLabel = "", "", ""
+	if input == "" {
+		return
+	}
+	switch op {
+	case "mkdir":
+		d.fsLoading = true
+		m.afterCmd = m.fsMkdirCmd(d, joinPath(d.fsPath, input))
+	case "rename":
+		if d.fsInputPath == "" {
+			return
+		}
+		newp := joinPath(d.fsPath, input)
+		d.fsLoading = true
+		m.afterCmd = m.fsRenameCmd(d, d.fsInputPath, newp)
+	case "chmod":
+		mode, err := parseOctal(input)
+		if err != nil {
+			m.setMsg("权限格式错误：应为八进制数字，如 644")
+			return
+		}
+		if d.fsInputPath == "" {
+			return
+		}
+		d.fsLoading = true
+		m.afterCmd = m.fsChmodCmd(d, d.fsInputPath, mode)
+	case "download":
+		if d.fsInputPath == "" || d.fsInputIsDir {
+			m.setMsg("仅支持下载文件")
+			return
+		}
+		local := input
+		if filepath.IsAbs(local) {
+			// 直接使用
+		} else {
+			local = filepath.Join(".", local) // 相对当前目录
+		}
+		d.fsLoading = true
+		m.afterCmd = m.fsDownloadCmd(d, d.fsInputPath, local)
+	case "upload":
+		local := input
+		if !filepath.IsAbs(local) {
+			local = filepath.Join(".", local)
+		}
+		remote := joinPath(d.fsPath, filepath.Base(local))
+		d.fsLoading = true
+		m.afterCmd = m.fsUploadCmd(d, local, remote)
+	}
+}
+
+// parseOctal 解析八进制权限字符串（如 "644"、"0755"），返回低 12 位模式。
+func parseOctal(s string) (os.FileMode, error) {
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || v > 0o7777 {
+		return 0, err
+	}
+	return os.FileMode(v), nil
+}
+
+// ---- 各操作的异步命令：执行后重新加载当前目录 ----
+
+func (m *Model) fsMkdirCmd(d *dlg, p string) tea.Cmd {
+	return func() tea.Msg {
+		if err := d.fs.Mkdir(p); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("新建目录失败：%w", err)}
+		}
+		return fsReload(d)
+	}
+}
+
+func (m *Model) fsRenameCmd(d *dlg, oldp, newp string) tea.Cmd {
+	return func() tea.Msg {
+		if err := d.fs.Rename(oldp, newp); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("重命名失败：%w", err)}
+		}
+		return fsReload(d)
+	}
+}
+
+func (m *Model) fsChmodCmd(d *dlg, p string, mode os.FileMode) tea.Cmd {
+	return func() tea.Msg {
+		if err := d.fs.Chmod(p, mode); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("改权限失败：%w", err)}
+		}
+		return fsReload(d)
+	}
+}
+
+func (m *Model) fsRemoveCmd(d *dlg, p string, isDir bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := d.fs.RemoveAll(p); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("删除失败：%w", err)}
+		}
+		return fsReload(d)
+	}
+}
+
+func (m *Model) fsDownloadCmd(d *dlg, remote, local string) tea.Cmd {
+	return func() tea.Msg {
+		data, err := d.fs.ReadFile(remote)
+		if err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("读取远端失败：%w", err)}
+		}
+		if err := os.WriteFile(local, data, 0o644); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("写入本地失败：%w", err)}
+		}
+		return fsLoadedMsg{path: d.fsPath, note: "已下载到 " + local}
+	}
+}
+
+func (m *Model) fsUploadCmd(d *dlg, local, remote string) tea.Cmd {
+	return func() tea.Msg {
+		data, err := os.ReadFile(local)
+		if err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("读取本地失败：%w", err)}
+		}
+		if err := d.fs.WriteFile(remote, data); err != nil {
+			return fsLoadedMsg{path: d.fsPath, err: fmt.Errorf("上传失败：%w", err)}
+		}
+		return fsLoadedMsg{path: d.fsPath, note: "已上传 " + local}
+	}
+}
+
+// fsReload 重新列出当前目录（供文件操作命令回调）。
+func fsReload(d *dlg) tea.Msg {
+	entries, err := d.fs.List(d.fsPath)
+	return fsLoadedMsg{path: d.fsPath, entries: entries, err: err}
 }
 
 // fsNavigate 跳转到某目录并异步加载。

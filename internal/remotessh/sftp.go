@@ -104,6 +104,40 @@ func (c *FSClient) Remove(p string) error { return c.c.Remove(p) }
 // Rename 重命名 / 移动。
 func (c *FSClient) Rename(oldp, newp string) error { return c.c.Rename(oldp, newp) }
 
+// Chmod 修改远端文件权限（mode 取低 12 位）。
+func (c *FSClient) Chmod(p string, mode os.FileMode) error { return c.c.Chmod(p, mode) }
+
+// RemoveAll 递归删除远端路径：文件直接删，目录递归清空后删除。
+func (c *FSClient) RemoveAll(p string) error {
+	info, err := c.c.Stat(p)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return c.c.Remove(p)
+	}
+	return c.removeDirRecursive(p)
+}
+
+// removeDirRecursive 递归删除目录（sftp 的 Walk 为前序，故自行后序删除）。
+func (c *FSClient) removeDirRecursive(p string) error {
+	entries, err := c.c.ReadDir(p)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		cp := path.Join(p, e.Name())
+		if e.IsDir() {
+			if err := c.removeDirRecursive(cp); err != nil {
+				return err
+			}
+		} else if err := c.c.Remove(cp); err != nil {
+			return err
+		}
+	}
+	return c.c.RemoveDirectory(p)
+}
+
 // Getwd 返回 SFTP 当前工作目录（通常是登录用户的家目录）。
 func (c *FSClient) Getwd() (string, error) { return c.c.Getwd() }
 

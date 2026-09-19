@@ -355,6 +355,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				d.fsScroll = 0
 				d.fsLoading = false
 				d.fsMsg = ""
+				if msg.note != "" {
+					m.setMsg(msg.note)
+				}
 			}
 		}
 		return m, nil

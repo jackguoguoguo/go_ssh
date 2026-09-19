@@ -70,7 +70,16 @@ type dlg struct {
 	fsFilter  string
 	fsLoading bool
 	fsMsg     string
-	fsDone    chan struct{} // 关闭对话框时关闭，停止编辑监听
+
+	// 文件操作输入态：fsOp 非空表示正在输入某操作的参数（重命名 / 权限 / 新建目录 / 上传 / 下载）。
+	fsOp         string
+	fsInput      string
+	fsInputLabel string
+	fsInputPath  string // 操作针对的远端文件（重命名 / 权限 / 下载）；目录操作留空
+	fsInputIsDir bool
+	fsConfirmDel bool // 删除二次确认态
+
+	fsDone chan struct{} // 关闭对话框时关闭，停止编辑监听
 }
 
 // dlgHit 记录对话框内可点击区域的屏幕坐标。
@@ -271,10 +280,19 @@ func (m *Model) renderDialog() string {
 			lines = append(lines, row)
 		}
 		lines = append(lines, "")
-		if d.fsFilter != "" {
-			lines = append(lines, styleDim.Render("  过滤: "+d.fsFilter))
+		if d.fsOp != "" {
+			lines = append(lines, styleTitle.Render("  "+d.fsInputLabel)+lipgloss.NewStyle().Foreground(cFg).Render(d.fsInput+"▏"))
+			lines = append(lines, styleDim.Render("  Enter 确认 · Esc 取消"))
+		} else if d.fsConfirmDel {
+			lines = append(lines, lipgloss.NewStyle().Foreground(cErr).Bold(true).Render("  确认删除 "+d.fsInputPath+" ？"))
+			lines = append(lines, styleDim.Render("  y/Enter 删除 · 其它按键取消"))
+		} else {
+			if d.fsFilter != "" {
+				lines = append(lines, styleDim.Render("  过滤: "+d.fsFilter))
+			}
+			lines = append(lines, styleDim.Render("  Enter 打开/进入 · e 编辑 · u 上级 · ~ 家目录 · r 重命名 · m 权限 · n 新建目录"))
+			lines = append(lines, styleDim.Render("  d 下载到本地 · U 上传本地文件 · D 删除 · / 过滤 · Esc 关闭"))
 		}
-		lines = append(lines, styleDim.Render("  Enter 打开/进入 · e 编辑(本地改动自动回传) · u/Backspace 上级 · ~ 家目录 · / 过滤 · Esc 关闭"))
 
 	case dlgForm, dlgSecret:
 		for i, f := range d.fields {
@@ -657,6 +675,7 @@ func helpBody() []string {
 		"  Ctrl+K          跳到「历史命令」面板并过滤",
 		"  Ctrl+G          SSH 密钥管理：生成密钥 / 推送公钥到 authorized_keys",
 		"  Ctrl+O          远端文件浏览器：浏览/打开/编辑服务器上的文件",
+		"                  文件内可 r 重命名 · m 改权限 · n 新建目录 · d 下载 · U 上传 · D 删除",
 		"  Ctrl+L          会话回放：重放当前会话已落盘的终端日志（需设置 SSHTOOL_LOG_DIR）",
 		"  Ctrl+P          把输入行内容加入收藏",
 		"  Ctrl+X          进入命令行（可编辑后回车执行）",
