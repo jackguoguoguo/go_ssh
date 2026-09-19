@@ -43,6 +43,10 @@ type Model struct {
 	favList  []store.FavoriteCmd
 	histList []store.HistoryEntry
 
+	// 连接的显示行（含分组头）；connSel / connScroll 以此为索引。
+	connRows  []connRow
+	collapsed map[string]bool // 分组收起状态
+
 	connSel, favSel, histSel       int
 	connScroll, favScroll          int
 	histScroll                     int
@@ -160,12 +164,7 @@ func (m *Model) refresh() {
 
 	q := m.connQuery
 	m.connList = filterConnections(m.st.GetConnections(), q)
-	if m.connSel >= len(m.connList) {
-		m.connSel = len(m.connList) - 1
-	}
-	if m.connSel < 0 {
-		m.connSel = 0
-	}
+	m.rebuildConnRows() // 依据分组与收起状态重建显示行，并修正 connSel
 
 	m.favList = filterFavorites(m.st.GetFavorites(), m.favQuery)
 	if m.favSel >= len(m.favList) {

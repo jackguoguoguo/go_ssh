@@ -47,6 +47,9 @@
   `SSHTOOL_RECONNECT_BASE` 调参（`SSHTOOL_KEEPALIVE_SECS=0` 关闭保活）
 - **主题切换**：内置 `dark`（默认，tokyo-night 风格）与 `light` 两套配色，由配置文件 `theme` 字段控制
   （修改后重启生效），也可在命令行模式输入 `theme light` / `theme dark` 实时切换并持久化
+- **连接分组与 `~/.ssh/config` 互通**：「保存的连接」按 `group` 分组显示，分组头可折叠/展开（回车切换）；
+  命令行 `import` 从 `~/.ssh/config` 导入连接（亦可 `import ssh /path`），`export` 把连接导出为
+  ssh_config 到 `~/.ssh/config.sshtool`（亦可 `export ssh /path`，不会覆盖真实 `~/.ssh/config`）
 
 ## 构建与运行
 
@@ -111,6 +114,7 @@ sshtool -v        # 查看版本与配置文件路径
 | `Alt+/` | 在回滚缓冲内搜索（回车确认）；`Alt+]` / `Alt+[` 跳下 / 上一处，`Esc` 清除 |
 | `Alt+A` | 广播模式：命令行输入同时发往所有已连接会话（高危命令会二次确认） |
 | `Tab` / `Shift+Tab` | 焦点在 连接 → 收藏 → 历史 → 终端 之间循环 |
+| `Enter`（连接面板分组头上） | 展开 / 收起该分组 |
 | `↑` `↓` `j` `k` | 移动列表选择 |
 | `/` | 过滤当前面板（`Esc` 清空并退出过滤） |
 | `PgUp` / `PgDn` / 滚轮 | 终端回滚；`End` 回到最新输出 |
@@ -119,6 +123,18 @@ sshtool -v        # 查看版本与配置文件路径
 | `Ctrl+Q` | 退出（二次确认，会断开所有会话） |
 
 > `Ctrl+N/W/R/B/K/P/X/E/D/H/Q` 属于本工具的功能键，不会发送给远端；其余按键（含 `Ctrl+C`、`Ctrl+Z`、功能键、方向键）在直通模式下原样透传。
+
+## 命令行元命令
+
+在命令行模式（`Ctrl+X`）直接输入以下命令回车即可，**无需已连接会话**（不会被发往远端）：
+
+| 命令 | 说明 |
+|---|---|
+| `theme dark` / `theme light` | 切换主题并持久化到配置 |
+| `import` | 从 `~/.ssh/config` 导入连接（按连接名去重，导入条目归入 `ssh_config` 分组） |
+| `import ssh /path/to/config` | 从指定 ssh_config 文件导入 |
+| `export` | 把连接导出为 ssh_config 到 `~/.ssh/config.sshtool` |
+| `export ssh /path/to/config` | 导出到指定路径（不会覆盖真实 `~/.ssh/config`） |
 
 ## 鼠标
 

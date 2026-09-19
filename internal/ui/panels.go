@@ -285,16 +285,35 @@ func (m *Model) renderConnPanel(r rect) string {
 	if m.connQuery != "" {
 		title += " /" + m.connQuery
 	}
-	items := make([]string, 0, len(m.connList))
-	accents := make([]string, 0, len(m.connList))
-	for _, c := range m.connList {
+	items := make([]string, 0, len(m.connRows)+1)
+	accents := make([]string, 0, len(m.connRows)+1)
+	for _, row := range m.connRows {
+		if row.isGroup {
+			arrow := "▾"
+			if m.collapsed[row.group] {
+				arrow = "▸"
+			}
+			n := 0
+			for _, c := range m.connList {
+				if c.Group == row.group {
+					n++
+				}
+			}
+			items = append(items, arrow+" "+row.group)
+			accents = append(accents, fmt.Sprintf("%d", n))
+			continue
+		}
+		if row.idx < 0 || row.idx >= len(m.connList) {
+			continue
+		}
+		c := m.connList[row.idx]
 		name := c.Name
 		if name == "" {
 			name = c.Host
 		}
-		prefix := "  "
+		prefix := "   " // 连接项缩进，与分组头区分
 		if _, ok := m.mgr.Get(c.ID); ok {
-			prefix = "● "
+			prefix = " ● "
 		}
 		items = append(items, prefix+name)
 		accents = append(accents, c.User+"@"+c.Host)

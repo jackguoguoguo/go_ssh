@@ -24,7 +24,7 @@ func (m *Model) panelRows(i int) int {
 func (m *Model) countOf(i int) int {
 	switch i {
 	case focusConn:
-		return len(m.connList)
+		return len(m.connRows)
 	case focusFav:
 		return len(m.favList)
 	case focusHist:
@@ -157,7 +157,14 @@ func (m *Model) activate(i int) (tea.Model, tea.Cmd) {
 
 	switch i {
 	case focusConn:
-		c := m.connList[sel]
+		if sel < len(m.connRows) && m.connRows[sel].isGroup {
+			m.toggleGroupAt(m.connRows[sel].group)
+			return m, nil
+		}
+		c, ok := m.selectedConn()
+		if !ok {
+			return m, nil
+		}
 		return m, m.connectConn(c)
 	case focusFav:
 		f := m.favList[sel]
@@ -217,9 +224,8 @@ func (m *Model) runCommand(cmd string) {
 	if cmd == "" {
 		return
 	}
-	// 元命令（无需已连接会话）：theme <name> 切换主题。
-	if lcmd := strings.ToLower(cmd); strings.HasPrefix(lcmd, "theme ") {
-		m.applyThemeByName(strings.TrimSpace(cmd[len("theme "):]))
+	// 元命令（无需已连接会话）：theme / import / export。
+	if handled := m.runMetaCommand(cmd); handled {
 		return
 	}
 	s := m.activeSession()
@@ -598,9 +604,9 @@ func (m *Model) openConnDialog(c store.Connection) tea.Cmd {
 		m.filtering = false
 		m.connQuery = ""
 		m.refresh()
-		for i, x := range m.connList {
-			if x.ID == nc.ID {
-				m.connSel = i
+		for ri, row := range m.connRows {
+			if !row.isGroup && row.idx >= 0 && row.idx < len(m.connList) && m.connList[row.idx].ID == nc.ID {
+				m.connSel = ri
 				m.ensureVisible(focusConn)
 				break
 			}
@@ -611,18 +617,18 @@ func (m *Model) openConnDialog(c store.Connection) tea.Cmd {
 }
 
 func (m *Model) editSelectedConn() tea.Cmd {
-	if len(m.connList) == 0 {
+	c, ok := m.selectedConn()
+	if !ok {
 		return nil
 	}
-	c := m.connList[m.connSel]
 	return m.openConnDialog(c)
 }
 
 func (m *Model) deleteSelectedConn() tea.Cmd {
-	if len(m.connList) == 0 {
+	c, ok := m.selectedConn()
+	if !ok {
 		return nil
 	}
-	c := m.connList[m.connSel]
 	m.dlg = newConfirmDialog("删除连接", "确定删除「"+c.Name+"」("+c.Host+")？已打开的会话会一并关闭。", func(m *Model, _ []string) {
 		m.mgr.Close(c.ID)
 		if err := m.st.RemoveConnection(c.ID); err != nil {
