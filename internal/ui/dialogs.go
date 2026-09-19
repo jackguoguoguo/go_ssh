@@ -657,6 +657,7 @@ func helpBody() []string {
 		"  Ctrl+K          跳到「历史命令」面板并过滤",
 		"  Ctrl+G          SSH 密钥管理：生成密钥 / 推送公钥到 authorized_keys",
 		"  Ctrl+O          远端文件浏览器：浏览/打开/编辑服务器上的文件",
+		"  Ctrl+L          会话回放：重放当前会话已落盘的终端日志（需设置 SSHTOOL_LOG_DIR）",
 		"  Ctrl+P          把输入行内容加入收藏",
 		"  Ctrl+X          进入命令行（可编辑后回车执行）",
 		"  Alt+S           终端文本选择：方向键移动，Space 定起点，Enter 复制，p 粘贴",

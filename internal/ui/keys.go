@@ -14,6 +14,11 @@ import (
 
 // onKey 统一入口：全局快捷键 → 对话框 → 面板 / 终端。
 func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 回放视图优先：仅处理滚动与退出，其它一律拦截。
+	if m.replay != nil {
+		return m.handleReplayKey(msg)
+	}
+
 	// 全局：退出
 	if msg.Type == tea.KeyCtrlQ {
 		if m.dlg != nil {
@@ -134,6 +139,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openKeyManager()
 	case tea.KeyCtrlO:
 		return m, m.openFileBrowser()
+	case tea.KeyCtrlL:
+		return m, m.openReplay()
 	case tea.KeyTab, tea.KeyShiftTab:
 		step := 1
 		if msg.Type == tea.KeyShiftTab {

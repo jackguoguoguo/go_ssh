@@ -56,6 +56,8 @@ type Model struct {
 	dlg       *dlg
 	dlgHit    dlgHit
 
+	replay *replayModal // 会话回放（Ctrl+L）全屏视图
+
 	msg        string
 	msgSeq     int
 	outPending bool
@@ -467,6 +469,9 @@ func (m *Model) View() string {
 	}
 	if m.dlg != nil {
 		return m.renderDialog()
+	}
+	if m.replay != nil {
+		return m.renderReplay()
 	}
 
 	l := m.computeLayout()

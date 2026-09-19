@@ -453,11 +453,14 @@ func (m *Model) renderStatus(l layout) string {
 		left = " " + m.msg
 		left = lipgloss.NewStyle().Foreground(cWarn).Render(left)
 	default:
-		left = " Tab 焦点 · Alt+S 选择复制 · Alt+/ 搜索 · Alt+A 广播 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+O 文件 · Ctrl+H 帮助"
+		left = " Tab 焦点 · Alt+S 选择复制 · Alt+/ 搜索 · Alt+A 广播 · Ctrl+X 命令行 · Ctrl+G 密钥 · Ctrl+O 文件 · Ctrl+L 回放 · Ctrl+H 帮助"
 		left = styleHint.Render(left)
 	}
 	right := ""
 	if s := m.activeSession(); s != nil {
+		if s.Logging() {
+			right += lipgloss.NewStyle().Foreground(cErr).Render(" ●记录 ")
+		}
 		cwd := m.remoteCwd()
 		if cwd == "" {
 			cwd = "(未知目录)"

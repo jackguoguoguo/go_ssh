@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +110,11 @@ type Session struct {
 	cancelOnce   sync.Once
 	cancel       chan struct{} // 关闭后中断重连退避等待
 
+	// 会话日志（落盘回放）：SSHTOOL_LOG_DIR 设置后启用，记录终端输出字节流。
+	logMu   sync.Mutex
+	logFile *os.File
+	logPath string
+
 	outCh  chan<- string // 全局输出通知通道（非阻塞，满了就丢弃）
 	events chan<- Event  // 全局事件通道
 }
@@ -123,7 +130,7 @@ func newSession(conn store.Connection, cols, rows int, events chan<- Event, outC
 	if scrollback < 0 {
 		scrollback = store.DefaultScrollback
 	}
-	return &Session{
+	s := &Session{
 		ID:     conn.ID,
 		Conn:   conn,
 		term:   vt.New(cols, rows, scrollback),
@@ -134,6 +141,76 @@ func newSession(conn store.Connection, cols, rows int, events chan<- Event, outC
 		outCh:  outCh,
 		events: events,
 	}
+	s.startLogging()
+	return s
+}
+
+// logDir 返回会话日志目录（SSHTOOL_LOG_DIR）；为空表示不记录。
+func logDir() string { return os.Getenv("SSHTOOL_LOG_DIR") }
+
+// startLogging 在 SSHTOOL_LOG_DIR 设置时为本会话创建日志文件（每次 Open/重连共用同一文件）。
+func (s *Session) startLogging() {
+	dir := logDir()
+	if dir == "" {
+		return
+	}
+	sub := sanitizeName(s.Conn.User + "@" + s.Conn.Host + "_" + itoa(s.Conn.Port))
+	if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+		return
+	}
+	ts := time.Now().Format("20060102-150405")
+	name := sanitizeName(s.ID) + "_" + ts + ".log"
+	path := filepath.Join(dir, sub, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return // 记录失败不阻塞主流程
+	}
+	s.logMu.Lock()
+	s.logPath = path
+	s.logFile = f
+	s.logMu.Unlock()
+}
+
+// sanitizeName 把文件名中的非法字符替换为下划线。
+func sanitizeName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ', '\t':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// Logging 表示本会话是否正在落盘记录。
+func (s *Session) Logging() bool {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	return s.logFile != nil
+}
+
+// LogPath 返回日志文件路径（未启用时为空）。
+func (s *Session) LogPath() string {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	return s.logPath
+}
+
+// appendLog 把一批终端输出字节追加到日志文件（尽力而为，忽略错误）。
+func (s *Session) appendLog(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	s.logMu.Lock()
+	f := s.logFile
+	s.logMu.Unlock()
+	if f == nil {
+		return
+	}
+	_, _ = f.Write(p)
 }
 
 // Term 返回该会话的终端缓冲区。
@@ -225,6 +302,13 @@ func (s *Session) Close() {
 	s.mu.Unlock()
 
 	s.cancelOnce.Do(func() { close(s.cancel) })
+
+	s.logMu.Lock()
+	if s.logFile != nil {
+		_ = s.logFile.Close()
+		s.logFile = nil
+	}
+	s.logMu.Unlock()
 
 	if stdin != nil {
 		_ = stdin.Close()
@@ -534,6 +618,7 @@ func (s *Session) readLoop(r io.Reader) {
 			return
 		}
 		_, _ = s.term.Write(pending)
+		s.appendLog(pending)
 		pending = pending[:0]
 		s.signal()
 	}
