@@ -8,7 +8,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// 配色（tokyo-night 风格）。
+// 配色（tokyo-night 风格，运行时由 applyTheme 按主题覆盖）。
 var (
 	cBg      = lipgloss.Color("#16161e")
 	cPanel   = lipgloss.Color("#1f2335")
@@ -20,6 +20,7 @@ var (
 	cWarn    = lipgloss.Color("#e0af68")
 	cErr     = lipgloss.Color("#f7768e")
 	cSelFg   = lipgloss.Color("#16161e")
+	cBorder  = lipgloss.Color("#292e42")
 )
 
 // 常用样式。
@@ -46,7 +47,7 @@ var (
 // boxStyle 生成一个面板边框样式。
 func boxStyle(w, h int, active bool) lipgloss.Style {
 	border := lipgloss.RoundedBorder()
-	bc := lipgloss.Color("#292e42")
+	bc := cBorder
 	if active {
 		bc = cAccent
 	}

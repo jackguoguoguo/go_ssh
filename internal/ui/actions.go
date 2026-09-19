@@ -213,6 +213,15 @@ func (m *Model) sendRaw(data []byte) {
 // runCommand 把整条命令发往会话并记录历史。
 // 广播模式（Alt+A）下发往所有已连接会话，否则只发当前会话。
 func (m *Model) runCommand(cmd string) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return
+	}
+	// 元命令（无需已连接会话）：theme <name> 切换主题。
+	if lcmd := strings.ToLower(cmd); strings.HasPrefix(lcmd, "theme ") {
+		m.applyThemeByName(strings.TrimSpace(cmd[len("theme "):]))
+		return
+	}
 	s := m.activeSession()
 	if s == nil {
 		m.setMsg("尚未连接到服务器")

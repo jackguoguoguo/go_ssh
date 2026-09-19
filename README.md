@@ -43,6 +43,8 @@
   自动按指数退避重连（默认最多 5 次，复用内存中的密码 / 私钥口令免重复询问），状态栏显示「重连中 / 已恢复连接」；
   用户主动退出 shell（`exit`）或关闭会话不触发重连。可用环境变量 `SSHTOOL_KEEPALIVE_SECS`、`SSHTOOL_RECONNECT_MAX`、
   `SSHTOOL_RECONNECT_BASE` 调参（`SSHTOOL_KEEPALIVE_SECS=0` 关闭保活）
+- **主题切换**：内置 `dark`（默认，tokyo-night 风格）与 `light` 两套配色，由配置文件 `theme` 字段控制
+  （修改后重启生效），也可在命令行模式输入 `theme light` / `theme dark` 实时切换并持久化
 
 ## 构建与运行
 

@@ -95,6 +95,8 @@ type Model struct {
 // New 创建根 Model。
 func New(st *store.Store, mgr *remotessh.Manager) Model {
 	configPathHint = st.Path()
+	// 按设置应用主题（Settings.Theme 此前未生效，现接入）。
+	applyTheme(st.GetSettings().Theme)
 	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16)}
 	m.refresh()
 	return m

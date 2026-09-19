@@ -312,9 +312,9 @@ func (m *Model) renderDialog() string {
 				Foreground(cFg).
 				Width(width).
 				MaxWidth(width).
-				Background(lipgloss.Color("#1f2335"))
+				Background(cPanel)
 			if active {
-				fieldStyle = fieldStyle.Background(lipgloss.Color("#292e42"))
+				fieldStyle = fieldStyle.Background(cBorder)
 			}
 			row := labelText + fieldStyle.Render(shown)
 			if f.hint != "" && active {
@@ -334,7 +334,7 @@ func (m *Model) renderDialog() string {
 		Background(cOK).Foreground(cSelFg).Bold(true).
 		Padding(0, 2).Render(okLabel)
 	cancelBtn := lipgloss.NewStyle().
-		Background(lipgloss.Color("#292e42")).Foreground(cFg).
+		Background(cBorder).Foreground(cFg).
 		Padding(0, 2).Render("取消")
 
 	hit.btnY = len(lines)
