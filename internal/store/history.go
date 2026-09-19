@@ -30,6 +30,8 @@ func (s *Store) AddHistory(cmd, host string) HistoryEntry {
 	if cmd == "" {
 		return HistoryEntry{}
 	}
+	// 入库前脱敏：口令 / 令牌等敏感值以 *** 遮蔽，避免明文落盘。
+	cmd = MaskSecrets(cmd)
 
 	storeMu.Lock()
 	defer storeMu.Unlock()
