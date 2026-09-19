@@ -11,10 +11,13 @@ type EventKind int
 
 const (
 	EventConnected    EventKind = iota // 建连成功
-	EventDisconnected                  // 连接断开
+	EventDisconnected                  // 连接断开（shell 正常退出）
 	EventError                         // 出错
 	EventNeedSecret                    // 需要密码 / 私钥口令
 	EventNeedHostKey                   // 主机指纹需要确认（未知主机）
+	EventReconnecting                  // 传输层断开，正在自动重连
+	EventReconnected                   // 自动重连成功
+	EventReconnectFailed               // 自动重连失败（已达最大次数）
 )
 
 // Event 会话事件，由 Manager 统一投递给 UI。
@@ -22,6 +25,7 @@ type Event struct {
 	SessionID string
 	Kind      EventKind
 	Err       error
+	Attempt   int // EventReconnecting 时表示第几次重连尝试
 }
 
 // Manager 管理全部存活的会话。

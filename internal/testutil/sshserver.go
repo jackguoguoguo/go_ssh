@@ -183,7 +183,16 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 		return
 	}
 	defer sc.Close()
-	go sshx.DiscardRequests(reqs)
+	// 回应在握手阶段协商的全局请求：OpenSSH 保活探测需要应答，否则客户端会判定连接已死。
+	go func() {
+		for r := range reqs {
+			if r.Type == "keepalive@openssh.com" {
+				_ = r.Reply(true, nil)
+			} else {
+				_ = r.Reply(false, nil)
+			}
+		}
+	}()
 
 	for newCh := range chans {
 		if newCh.ChannelType() != "session" {

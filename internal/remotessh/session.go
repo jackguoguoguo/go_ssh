@@ -3,6 +3,8 @@ package remotessh
 import (
 	"errors"
 	"io"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ type State int
 const (
 	StateConnecting State = iota // 正在建立连接
 	StateConnected               // 已连接
+	StateReconnecting            // 连接断开后正在自动重连
 	StateClosed                  // 已关闭（用户主动断开）
 	StateError                   // 连接失败或异常断开
 )
@@ -29,6 +32,8 @@ func (s State) String() string {
 		return "连接中"
 	case StateConnected:
 		return "已连接"
+	case StateReconnecting:
+		return "重连中"
 	case StateClosed:
 		return "已关闭"
 	case StateError:
@@ -40,6 +45,45 @@ func (s State) String() string {
 // 输出批量聚合的时间窗口：窗口内的输出合并后一次性写入终端缓冲区，
 // 避免高频输出把 UI 主线程打满。
 const batchWindow = 8 * time.Millisecond
+
+// 自动重连与心跳的可调参数（均可用环境变量覆盖，便于测试与特殊网络环境）。
+const (
+	defaultKeepaliveSecs = 30
+	defaultReconnectMax  = 5
+	defaultReconnectBase = 2 * time.Second
+	reconnectBackoffMax  = 30 * time.Second
+)
+
+func keepaliveSecs() int { return intFromEnv("SSHTOOL_KEEPALIVE_SECS", defaultKeepaliveSecs) }
+func reconnectMax() int  { return intFromEnv("SSHTOOL_RECONNECT_MAX", defaultReconnectMax) }
+
+// reconnectBackoff 返回第 attempt 次重试前的等待时长（指数退避，封顶 reconnectBackoffMax）。
+func reconnectBackoff(attempt int) time.Duration {
+	if attempt < 2 {
+		return 0
+	}
+	d := time.Duration(intFromEnv("SSHTOOL_RECONNECT_BASE", int(defaultReconnectBase/time.Second))) * time.Second
+	for i := 2; i < attempt; i++ {
+		d *= 2
+		if d >= reconnectBackoffMax {
+			return reconnectBackoffMax
+		}
+	}
+	if d > reconnectBackoffMax {
+		return reconnectBackoffMax
+	}
+	return d
+}
+
+// intFromEnv 读取正整数型环境变量，非法或缺失时回退默认值。
+func intFromEnv(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // Session 表示一个已建立的（或正在建立的）远程会话。
 type Session struct {
@@ -58,6 +102,11 @@ type Session struct {
 	rows    int
 	closed  bool
 	secret  string // 本次连接使用的密码 / 私钥口令，仅内存保存，用于重连时免重复询问
+
+	// 自动重连相关
+	reconnecting bool
+	cancelOnce   sync.Once
+	cancel       chan struct{} // 关闭后中断重连退避等待
 
 	outCh  chan<- string // 全局输出通知通道（非阻塞，满了就丢弃）
 	events chan<- Event  // 全局事件通道
@@ -81,6 +130,7 @@ func newSession(conn store.Connection, cols, rows int, events chan<- Event, outC
 		state:  StateConnecting,
 		cols:   cols,
 		rows:   rows,
+		cancel: make(chan struct{}),
 		outCh:  outCh,
 		events: events,
 	}
@@ -174,6 +224,8 @@ func (s *Session) Close() {
 	s.stdin, s.session, s.client = nil, nil, nil
 	s.mu.Unlock()
 
+	s.cancelOnce.Do(func() { close(s.cancel) })
+
 	if stdin != nil {
 		_ = stdin.Close()
 	}
@@ -195,8 +247,43 @@ func (s *Session) Secret() string {
 	return s.secret
 }
 
+// connectImpl 是实际建连逻辑的可替换点，便于测试注入故障序列。
+var connectImpl func(*Session, string) error
+
+func init() {
+	connectImpl = connectReal
+}
+
+// connect 完成一次建连（同步）。成功返回 nil 并置 StateConnected；失败返回错误并置 StateError。
+// 它不主动发事件：初始建连由 dial 包裹后转发给 fail()，自动重连由 reconnect 自行决定事件。
+func (s *Session) connect(secret string) error { return connectImpl(s, secret) }
+
 // dial 在后台协程中完成建连、申请 PTY 并启动 shell。
 func (s *Session) dial(secret string) {
+	go func() {
+		if err := s.connect(secret); err != nil {
+			s.fail(err)
+		}
+	}()
+}
+
+// setErr 在连接失败时记录错误并置异常态，关闭已建立的底层连接。
+func (s *Session) setErr(err error) error {
+	s.mu.Lock()
+	if !s.closed {
+		s.state = StateError
+		s.err = err
+	}
+	cli := s.client
+	s.mu.Unlock()
+	if cli != nil {
+		_ = cli.Close()
+	}
+	return err
+}
+
+// connectReal 真实的建连实现：TCP 握手 → SSH 认证 → PTY → shell，并启动输出/心跳/等待协程。
+func connectReal(s *Session, secret string) error {
 	addr := addrOf(s.Conn)
 	user := userOf(s.Conn)
 
@@ -206,8 +293,7 @@ func (s *Session) dial(secret string) {
 
 	methods, err := authMethods(s.Conn, secret)
 	if err != nil {
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	cfg := &sshx.ClientConfig{
@@ -219,23 +305,21 @@ func (s *Session) dial(secret string) {
 
 	client, err := sshx.Dial("tcp", addr, cfg)
 	if err != nil {
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		_ = client.Close()
-		return
+		return nil // 已被关闭，视为正常退出，不报错
 	}
 	s.client = client
 	s.mu.Unlock()
 
 	sess, err := client.NewSession()
 	if err != nil {
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	modes := sshx.TerminalModes{
@@ -246,8 +330,7 @@ func (s *Session) dial(secret string) {
 	cols, rows := s.Cols(), s.Rows()
 	if err := sess.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		_ = sess.Close()
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	pr, pw := io.Pipe()
@@ -257,14 +340,12 @@ func (s *Session) dial(secret string) {
 	stdin, err := sess.StdinPipe()
 	if err != nil {
 		_ = sess.Close()
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	if err := sess.Shell(); err != nil {
 		_ = sess.Close()
-		s.fail(err)
-		return
+		return s.setErr(err)
 	}
 
 	s.mu.Lock()
@@ -275,21 +356,28 @@ func (s *Session) dial(secret string) {
 	s.mu.Unlock()
 
 	go s.readLoop(pr)
+	go s.keepalive()
 	go func() {
-		_ = sess.Wait()
+		werr := sess.Wait()
 		_ = pw.Close()
 		s.mu.Lock()
 		already := s.closed || s.state != StateConnected
 		s.mu.Unlock()
-		if !already {
-			// Wait 正常返回意味着远端 shell 退出（可能是用户执行了 exit）。
-			s.mu.Lock()
-			if s.state == StateConnected {
-				s.state = StateClosed
-			}
-			s.mu.Unlock()
-			s.emit(Event{SessionID: s.ID, Kind: EventDisconnected})
+		if already {
+			return
 		}
+		if werr != nil {
+			// 传输层断开（网络抖动 / 服务端重启），自动重连。
+			s.reconnect()
+			return
+		}
+		// shell 正常退出（如用户执行 exit）：不重连。
+		s.mu.Lock()
+		if s.state == StateConnected {
+			s.state = StateClosed
+		}
+		s.mu.Unlock()
+		s.emit(Event{SessionID: s.ID, Kind: EventDisconnected})
 	}()
 
 	s.emit(Event{SessionID: s.ID, Kind: EventConnected})
@@ -303,6 +391,111 @@ func (s *Session) dial(secret string) {
 		time.Sleep(300 * time.Millisecond)
 		_ = s.Write([]byte(s.Conn.StartupCmd + "\n"))
 	}
+	return nil
+}
+
+// keepalive 周期性发送 SSH 保活探测，连续失败则关闭底层连接以触发自动重连。
+// SSHTOOL_KEEPALIVE_SECS=0 可关闭（默认 30 秒）。
+func (s *Session) keepalive() {
+	secs := keepaliveSecs()
+	if secs <= 0 {
+		return
+	}
+	tick := time.NewTicker(time.Duration(secs) * time.Second)
+	defer tick.Stop()
+
+	const maxMiss = 2
+	miss := 0
+	for {
+		select {
+		case <-s.cancel:
+			return
+		case <-tick.C:
+		}
+		s.mu.Lock()
+		cli, closed := s.client, s.closed
+		s.mu.Unlock()
+		if closed || cli == nil {
+			return
+		}
+		// OpenSSH 保活探测：wantReply=true，服务端应回 should-be-replied。
+		if _, _, err := cli.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+			if miss++; miss >= maxMiss {
+				_ = cli.Close() // 关闭后 Wait 报错 → reconnect
+				return
+			}
+			continue
+		}
+		miss = 0
+	}
+}
+
+// reconnect 在传输层断开后按指数退避自动重连，复用内存中的 secret。
+// 用户主动 Close 会中断退避；超过最大次数则置异常态并提示手动重连。
+func (s *Session) reconnect() {
+	s.mu.Lock()
+	if s.closed || s.reconnecting {
+		s.mu.Unlock()
+		return
+	}
+	s.reconnecting = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.reconnecting = false
+		s.mu.Unlock()
+	}()
+
+	maxA := reconnectMax()
+	for attempt := 1; attempt <= maxA; attempt++ {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		s.state = StateReconnecting
+		s.mu.Unlock()
+		s.emit(Event{SessionID: s.ID, Kind: EventReconnecting, Attempt: attempt})
+
+		// 首次尝试立即进行，之后指数退避（可被 Close 中断）。
+		if attempt > 1 {
+			select {
+			case <-time.After(reconnectBackoff(attempt)):
+			case <-s.cancel:
+				return
+			}
+		}
+		if s.closed {
+			return
+		}
+
+		err := s.connect(s.secret)
+		if err == nil && s.State() == StateConnected {
+			s.emit(Event{SessionID: s.ID, Kind: EventReconnected})
+			return
+		}
+
+		// 指纹变更等需要用户决策的错误：交给 UI，不再盲目重试。
+		var hke *HostKeyError
+		if errors.As(err, &hke) {
+			s.mu.Lock()
+			if !s.closed {
+				s.state = StateError
+				s.err = err
+			}
+			s.mu.Unlock()
+			s.emit(Event{SessionID: s.ID, Kind: EventNeedHostKey, Err: err})
+			return
+		}
+	}
+	s.mu.Lock()
+	if !s.closed {
+		s.state = StateError
+		s.err = errors.New("自动重连失败，请按 Ctrl+R 手动重连")
+	}
+	s.mu.Unlock()
+	s.emit(Event{SessionID: s.ID, Kind: EventReconnectFailed})
 }
 
 // injectCwdSync 让远端 shell 每次刷新提示符时通过 OSC 标题上报当前工作目录。

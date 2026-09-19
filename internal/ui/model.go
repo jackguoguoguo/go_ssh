@@ -430,6 +430,14 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 	case remotessh.EventDisconnected:
 		m.resetTermModes()
 		m.refreshSessions()
+	case remotessh.EventReconnecting:
+		m.refreshSessions()
+	case remotessh.EventReconnected:
+		m.setMsg("已恢复连接")
+		m.refreshSessions()
+	case remotessh.EventReconnectFailed:
+		m.setMsg("自动重连失败，按 Ctrl+R 手动重连")
+		m.refreshSessions()
 	}
 	m.refreshSessions()
 }
