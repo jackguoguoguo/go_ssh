@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	sshx "golang.org/x/crypto/ssh"
@@ -186,9 +188,20 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 	// 回应在握手阶段协商的全局请求：OpenSSH 保活探测需要应答，否则客户端会判定连接已死。
 	go func() {
 		for r := range reqs {
-			if r.Type == "keepalive@openssh.com" {
+			switch r.Type {
+			case "keepalive@openssh.com":
 				_ = r.Reply(true, nil)
-			} else {
+			case "tcpip-forward":
+				// 远端端口转发：解析 bind 地址/端口后在服务端监听，连接经 forwarded-tcpip 通道回传客户端。
+				if addr, port, ok := parseTCPForward(r.Payload); ok {
+					_ = r.Reply(true, nil)
+					go s.serveTCPForward(sc, addr, port)
+				} else {
+					_ = r.Reply(false, nil)
+				}
+			case "cancel-tcpip-forward":
+				_ = r.Reply(true, nil)
+			default:
 				_ = r.Reply(false, nil)
 			}
 		}
@@ -196,6 +209,11 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 
 	for newCh := range chans {
 		if newCh.ChannelType() != "session" {
+			// 支持 direct-tcpip（本地端口转发用）：解析目标后实际拨号并桥接。
+			if newCh.ChannelType() == "direct-tcpip" {
+				go s.serveDirectTCP(newCh)
+				continue
+			}
 			_ = newCh.Reject(sshx.UnknownChannelType, "unsupported")
 			continue
 		}
@@ -260,7 +278,95 @@ func (s *SSHServer) serve(nc net.Conn, cfg *sshx.ServerConfig) {
 				default:
 					_ = req.Reply(false, nil)
 				}
-			}
-		}()
+				}
+				}()
+				}
+				}
+
+				// serveDirectTCP 处理 direct-tcpip 通道（本地端口转发的「隧道出口」）：
+// 解析目标地址后从服务端侧真实拨号，并双向桥接。
+// 载荷含 4 个字段（RFC 4254）：目标 host、目标 port、发起方地址、发起方端口。
+func (s *SSHServer) serveDirectTCP(newCh sshx.NewChannel) {
+	var req struct {
+		Host     string
+		Port     uint32
+		OrigAddr string
+		OrigPort uint32
 	}
+	if err := sshx.Unmarshal(newCh.ExtraData(), &req); err != nil {
+		_ = newCh.Reject(sshx.ConnectionFailed, "cannot parse direct-tcpip: "+err.Error())
+		return
+	}
+	ch, chReqs, err := newCh.Accept()
+	if err != nil {
+		return
+	}
+	go sshx.DiscardRequests(chReqs)
+
+	target := net.JoinHostPort(req.Host, fmt.Sprintf("%d", req.Port))
+	rc, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		_, _ = ch.SendRequest("exit-status", false, sshx.Marshal(struct{ Status uint32 }{1}))
+		_ = ch.Close()
+		return
+	}
+	go func() {
+		defer ch.Close()
+		defer rc.Close()
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(ch, rc); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(rc, ch); done <- struct{}{} }()
+		<-done
+	}()
 }
+
+// parseTCPForward 解析 tcpip-forward 请求载荷：string(bindAddr) + uint32(bindPort)。
+				func parseTCPForward(payload []byte) (addr string, port uint32, ok bool) {
+				if len(payload) < 4 {
+				return "", 0, false
+				}
+				addrLen := int(payload[0])<<24 | int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+				if len(payload) < 4+addrLen+4 {
+				return "", 0, false
+				}
+				addr = string(payload[4 : 4+addrLen])
+				port = uint32(payload[4+addrLen])<<24 | uint32(payload[4+addrLen+1])<<16 | uint32(payload[4+addrLen+2])<<8 | uint32(payload[4+addrLen+3])
+				return addr, port, true
+				}
+
+				// serveTCPForward 在服务端监听 bindAddr:bindPort，每个连接经 forwarded-tcpip 通道回传客户端。
+				func (s *SSHServer) serveTCPForward(sc sshx.Conn, bindAddr string, bindPort uint32) {
+				ln, err := net.Listen("tcp", net.JoinHostPort(bindAddr, fmt.Sprintf("%d", bindPort)))
+				if err != nil {
+				return
+				}
+				defer ln.Close()
+				for {
+				conn, err := ln.Accept()
+				if err != nil {
+				return
+				}
+				// payload：connected addr/port 用 bind 信息匹配；originator 需为合法 IP 与 1..65535 的端口，
+				// 否则客户端 parseTCPAddr 会直接拒绝通道。
+				payload := sshx.Marshal(struct {
+					ConnectAddr string
+					ConnectPort uint32
+					OrigAddr    string
+					OrigPort    uint32
+				}{bindAddr, bindPort, "127.0.0.1", 54321})
+				ch, chReqs, err := sc.OpenChannel("forwarded-tcpip", payload)
+				if err != nil {
+				_ = conn.Close()
+				continue
+				}
+				go sshx.DiscardRequests(chReqs)
+				go func() {
+				defer conn.Close()
+				defer ch.Close()
+				done := make(chan struct{}, 2)
+				go func() { _, _ = io.Copy(ch, conn); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(conn, ch); done <- struct{}{} }()
+				<-done
+				}()
+				}
+				}

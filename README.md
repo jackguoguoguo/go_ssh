@@ -55,6 +55,10 @@
 - **本地 shell 标签**：命令行输入 `shell` 即可在本机开一个**真实 PTY** 的 shell 标签（Windows 走 ConPTY，
   Unix 走 pty），与 SSH 会话并列在同一个标签栏；支持窗口尺寸同步，因此 `vim` / `top` 这类全屏程序也能跑
   （本地 shell 不参与广播，也没有远端文件浏览器与会话回放）
+- **端口转发（本地 -L / 远端 -R）**：在命令行输入 `forward L <监听地址> <目标地址>` 或 `forward R ...`
+  即可经当前 SSH 会话建立隧道，用 `forwards` 查看、`forward stop <id>` 停止；适合把内网服务映射出来或把本机服务暴露给远端
+- **跳板机（ProxyJump）**：设置环境变量 `SSHTOOL_PROXY_JUMP=[user@]host[:port]` 后，所有连接都会先经该跳板机建立，
+  跳板机认证可用 `SSHTOOL_PROXY_JUMP_PASSWORD` / `SSHTOOL_PROXY_JUMP_PASSPHRASE` 提供密码 / 私钥口令（与 store.Connection 冻结契约无关，故走环境变量）
 
 ## 构建与运行
 
@@ -141,6 +145,10 @@ sshtool -v        # 查看版本与配置文件路径
 | `export` | 把连接导出为 ssh_config 到 `~/.ssh/config.sshtool` |
 | `export ssh /path/to/config` | 导出到指定路径（不会覆盖真实 `~/.ssh/config`） |
 | `shell` | 打开一个「本地 shell」标签（本机真实 PTY，与 SSH 会话并列） |
+| `forward L <监听> <目标>` | 本地端口转发：本机监听，经当前 SSH 会话隧道到目标（如 `forward L 8080 example.com:80`） |
+| `forward R <监听> <目标>` | 远端端口转发：服务端监听，经隧道回连本机（如 `forward R 2222 127.0.0.1:22`） |
+| `forwards` | 列出当前所有端口转发 |
+| `forward stop <id>` | 停止指定转发（id 形如 `L1` / `R2`，用 `forwards` 查看） |
 
 ## 鼠标
 
@@ -350,6 +358,6 @@ UI 按键 ───▶ remotessh.Session.Write ───────────
 ## 已知限制
 
 - 复制走 OSC 52 写入系统剪贴板；极少数终端（或未开启「Allow OSC 52」的 tmux/终端模拟器）不支持时，内容会落到 `~/.sshtool/clipboard.txt` 作为兜底
-- 支持 SFTP（`Ctrl+O` 文件浏览器）；尚未支持端口转发与 ProxyJump 跳板机（数据结构已预留 `group` 等字段，跳板机未实现）
+- 支持 SFTP（`Ctrl+O` 文件浏览器）、端口转发（`forward` 元命令）与跳板机（`SSHTOOL_PROXY_JUMP` 环境变量）
 - 终端模拟实现的是常用 CSI 子集（见 `internal/vt`），极少数冷门序列会被安全忽略
 - 直通模式下不记录历史命令（避免把程序交互输出误当成命令），历史只在命令行模式发送时记录

@@ -98,6 +98,7 @@ type Session struct {
 	state   State
 	err     error
 	client  *sshx.Client
+	jump    *sshx.Client // ProxyJump 跳板机的客户端；目标连接建立在其通道之上，需与之同生命周期
 	session *sshx.Session
 	stdin   io.WriteCloser
 	cols    int
@@ -298,7 +299,8 @@ func (s *Session) Close() {
 	stdin := s.stdin
 	sess := s.session
 	client := s.client
-	s.stdin, s.session, s.client = nil, nil, nil
+	jump := s.jump
+	s.stdin, s.session, s.client, s.jump = nil, nil, nil, nil
 	s.mu.Unlock()
 
 	s.cancelOnce.Do(func() { close(s.cancel) })
@@ -319,9 +321,20 @@ func (s *Session) Close() {
 	if client != nil {
 		_ = client.Close()
 	}
+	// 目标连接建立在跳板机的通道之上，必须在目标关闭之后再关跳板机。
+	if jump != nil {
+		_ = jump.Close()
+	}
 	if prev != StateClosed {
 		s.emit(Event{SessionID: s.ID, Kind: EventDisconnected})
 	}
+}
+
+// Client 返回底层 SSH 客户端，供端口转发等场景复用已建立的连接；未就绪时返回 nil。
+func (s *Session) Client() *sshx.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
 }
 
 // Secret 返回本次连接使用的密码 / 私钥口令（仅内存，不落盘），供重连复用。
@@ -387,7 +400,8 @@ func connectReal(s *Session, secret string) error {
 		Timeout:         DefaultDialTimeout,
 	}
 
-	client, err := sshx.Dial("tcp", addr, cfg)
+	// 配置了 SSHTOOL_PROXY_JUMP 时经跳板机建立；jump 可能非空，需随会话一起关闭。
+	client, jump, err := dialClient(addr, cfg)
 	if err != nil {
 		return s.setErr(err)
 	}
@@ -396,9 +410,13 @@ func connectReal(s *Session, secret string) error {
 	if s.closed {
 		s.mu.Unlock()
 		_ = client.Close()
+		if jump != nil {
+			_ = jump.Close()
+		}
 		return nil // 已被关闭，视为正常退出，不报错
 	}
 	s.client = client
+	s.jump = jump
 	s.mu.Unlock()
 
 	sess, err := client.NewSession()

@@ -704,6 +704,13 @@ func helpBody() []string {
 		"  安全：首次连接陌生主机会弹出指纹确认；指纹与 known_hosts 不符将拒绝连接。",
 		"        rm -rf /、dd of=/dev/*、shutdown 等高危命令会二次确认后再执行。",
 		"",
+		"  端口转发（命令行元命令，需当前为已连接的 SSH 会话）：",
+		"    forward L <监听地址> <目标地址>   本地转发：本机监听，经隧道到目标，如 forward L 8080 example.com:80",
+		"    forward R <监听地址> <目标地址>   远端转发：服务端监听，经隧道回连本机，如 forward R 2222 127.0.0.1:22",
+		"    forwards                         列出当前所有转发",
+		"    forward stop <id>                停止指定转发（id 形如 L1 / R2）",
+		"  跳板机：设置环境变量 SSHTOOL_PROXY_JUMP=[user@]host[:port] 后，所有连接经该跳板机建立。",
+		"",
 		"  配置文件：" + configPathHint,
 	}
 }

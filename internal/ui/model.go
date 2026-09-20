@@ -10,6 +10,7 @@ import (
 
 	"sshtool/internal/keytool"
 	"sshtool/internal/localshell"
+	"sshtool/internal/portfwd"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 	"sshtool/internal/vt"
@@ -51,6 +52,9 @@ type Model struct {
 
 	// passCache 进程内私钥口令缓存：键为私钥路径，避免同一私钥重复询问。
 	passCache map[string]string
+
+	// fwd 管理所有端口转发，与 SSH 会话解耦（转发随会话生命周期，但归总在本进程内）。
+	fwd *portfwd.Manager
 
 	connSel, favSel, histSel       int
 	connScroll, favScroll          int
@@ -106,7 +110,7 @@ func New(st *store.Store, mgr *remotessh.Manager) Model {
 	configPathHint = st.Path()
 	// 按设置应用主题（Settings.Theme 此前未生效，现接入）。
 	applyTheme(st.GetSettings().Theme)
-	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16), passCache: map[string]string{}}
+	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16), passCache: map[string]string{}, fwd: portfwd.New()}
 	m.refresh()
 	return m
 }
@@ -346,6 +350,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.applyTermSize()
 		return m, nil
+
+	case tea.QuitMsg:
+		// 退出前清理所有端口转发监听，避免端口残留占用。
+		if m.fwd != nil {
+			m.fwd.StopAll()
+		}
+		return m, tea.Quit
 
 	case tea.KeyMsg:
 		return m.onKey(msg)
