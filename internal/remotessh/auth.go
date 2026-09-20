@@ -10,9 +10,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	sshx "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"sshtool/internal/store"
@@ -48,14 +50,7 @@ func userOf(conn store.Connection) string {
 // secret 的含义取决于配置：密码认证时为登录密码；私钥认证时为私钥口令（可为空）。
 func authMethods(conn store.Connection, secret string) ([]sshx.AuthMethod, error) {
 	if conn.AuthType == store.AuthKey {
-		keyPath := conn.KeyPath
-		if keyPath == "" {
-			home, _ := os.UserHomeDir()
-			keyPath = filepath.Join(home, ".ssh", "id_rsa")
-		}
-		keyPath = expandHome(keyPath)
-
-		pem, err := os.ReadFile(keyPath)
+		pem, err := os.ReadFile(ResolveKeyPath(conn))
 		if err != nil {
 			return nil, fmt.Errorf("读取私钥失败: %w", err)
 		}
@@ -73,11 +68,16 @@ func authMethods(conn store.Connection, secret string) ([]sshx.AuthMethod, error
 				return nil, ErrNeedPassphrase
 			}
 		}
-		return []sshx.AuthMethod{sshx.PublicKeys(signer)}, nil
+		methods := []sshx.AuthMethod{sshx.PublicKeys(signer)}
+		// 私钥之外再挂上 ssh-agent：即便本地私钥文件缺失/加密，也能用已加载到 agent 的密钥登录。
+		if am := agentAuthMethod(); am != nil {
+			methods = append(methods, am)
+		}
+		return methods, nil
 	}
 
 	// 密码认证：同时挂上 keyboard-interactive，兼容只支持交互式认证的服务端。
-	methods := make([]sshx.AuthMethod, 0, 2)
+	methods := make([]sshx.AuthMethod, 0, 3)
 	if secret != "" {
 		methods = append(methods, sshx.Password(secret))
 		methods = append(methods, sshx.KeyboardInteractive(
@@ -96,7 +96,73 @@ func authMethods(conn store.Connection, secret string) ([]sshx.AuthMethod, error
 			},
 		))
 	}
+	// 最后兜底尝试 ssh-agent 中的公钥。
+	if am := agentAuthMethod(); am != nil {
+		methods = append(methods, am)
+	}
 	return methods, nil
+}
+
+// ResolveKeyPath 返回连接实际使用的私钥路径（缺省 ~/.ssh/id_rsa，并展开开头的 ~）。
+func ResolveKeyPath(conn store.Connection) string {
+	keyPath := conn.KeyPath
+	if keyPath == "" {
+		home, _ := os.UserHomeDir()
+		keyPath = filepath.Join(home, ".ssh", "id_rsa")
+	}
+	return expandHome(keyPath)
+}
+
+// ---------- ssh-agent ----------
+
+var (
+	agentMu     sync.Mutex
+	agentClient agent.ExtendedAgent
+	agentTried  bool
+)
+
+// sharedAgent 惰性建立并复用一个 ssh-agent 客户端连接；SSH_AUTH_SOCK 未设置或连接失败时返回 nil。
+//
+// 复用同一个连接是因为 agent 返回的 signer 在签名时仍需回访该连接；进程内共享一份即可，
+// 生命周期与进程一致。Windows 的 OpenSSH agent 走命名管道（非 unix socket），此处不可用，
+// 会安全退化为不使用 agent。
+func sharedAgent() agent.ExtendedAgent {
+	agentMu.Lock()
+	defer agentMu.Unlock()
+	if agentTried {
+		return agentClient
+	}
+	agentTried = true
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return nil
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return nil
+	}
+	agentClient = agent.NewClient(conn)
+	return agentClient
+}
+
+// AgentAvailable 报告当前进程是否已成功连上 ssh-agent（可用于 UI 状态提示）。
+func AgentAvailable() bool { return sharedAgent() != nil }
+
+// agentAuthMethod 返回基于 ssh-agent 的公钥认证方式；不可用时返回 nil。
+func agentAuthMethod() sshx.AuthMethod {
+	ag := sharedAgent()
+	if ag == nil {
+		return nil
+	}
+	return sshx.PublicKeysCallback(ag.Signers)
+}
+
+// resetAgentForTest 仅供测试重置 agent 缓存。
+func resetAgentForTest() {
+	agentMu.Lock()
+	agentTried = false
+	agentClient = nil
+	agentMu.Unlock()
 }
 
 // hostKeyCallback 严格校验主机指纹：以 ~/.ssh/known_hosts 为准（文件缺失时创建）。

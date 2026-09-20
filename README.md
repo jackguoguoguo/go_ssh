@@ -50,6 +50,8 @@
 - **连接分组与 `~/.ssh/config` 互通**：「保存的连接」按 `group` 分组显示，分组头可折叠/展开（回车切换）；
   命令行 `import` 从 `~/.ssh/config` 导入连接（亦可 `import ssh /path`），`export` 把连接导出为
   ssh_config 到 `~/.ssh/config.sshtool`（亦可 `export ssh /path`，不会覆盖真实 `~/.ssh/config`）
+- **ssh-agent 集成 + 私钥口令缓存**：`SSH_AUTH_SOCK` 可用时，认证会自动附带 agent 里的公钥
+  （本地私钥缺失/加密也能登录）；私钥口令在本进程内按私钥路径缓存，同一私钥连接多台主机只问一次
 
 ## 构建与运行
 

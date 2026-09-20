@@ -47,6 +47,9 @@ type Model struct {
 	connRows  []connRow
 	collapsed map[string]bool // 分组收起状态
 
+	// passCache 进程内私钥口令缓存：键为私钥路径，避免同一私钥重复询问。
+	passCache map[string]string
+
 	connSel, favSel, histSel       int
 	connScroll, favScroll          int
 	histScroll                     int
@@ -101,9 +104,20 @@ func New(st *store.Store, mgr *remotessh.Manager) Model {
 	configPathHint = st.Path()
 	// 按设置应用主题（Settings.Theme 此前未生效，现接入）。
 	applyTheme(st.GetSettings().Theme)
-	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16)}
+	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16), passCache: map[string]string{}}
 	m.refresh()
 	return m
+}
+
+// cachePassphrase 记住某私钥的口令（仅私钥认证、非空时），供后续连接复用以免重复询问。
+func (m *Model) cachePassphrase(c store.Connection, secret string) {
+	if c.AuthType != store.AuthKey || secret == "" {
+		return
+	}
+	if m.passCache == nil {
+		m.passCache = map[string]string{}
+	}
+	m.passCache[remotessh.ResolveKeyPath(c)] = secret
 }
 
 // ---------- 消息 ----------
@@ -416,6 +430,7 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 				if len(values) > 0 {
 					secret = values[0]
 				}
+				m.cachePassphrase(conn, secret)
 				l := m.computeLayout()
 				s := m.mgr.Reopen(conn, secret, l.termCol, l.termRow, m.st.GetSettings().Scrollback)
 				m.activeID = s.ID

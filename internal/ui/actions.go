@@ -506,9 +506,14 @@ func (m *Model) connectConn(c store.Connection) tea.Cmd {
 	needAsk := false
 	if c.AuthType == store.AuthKey {
 		secret = c.KeyPassphrase
-		if c.AskPassphrase {
-			needAsk = true
-			secret = ""
+		if secret == "" || c.AskPassphrase {
+			if cached, ok := m.passCache[remotessh.ResolveKeyPath(c)]; ok {
+				secret = cached // 命中进程内口令缓存，免重复询问
+			} else if c.AskPassphrase {
+				needAsk = true
+				secret = ""
+			}
+			// 未命中且非「每次询问」：secret 保持空，握手失败后由 EventNeedSecret 询问并缓存。
 		}
 	} else {
 		secret = c.Password
@@ -529,6 +534,7 @@ func (m *Model) connectConn(c store.Connection) tea.Cmd {
 			if len(v) > 0 {
 				pw = v[0]
 			}
+			m.cachePassphrase(conn, pw)
 			m.doOpen(conn, pw)
 		})
 		return nil
