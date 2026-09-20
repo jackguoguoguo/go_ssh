@@ -116,6 +116,8 @@ func New(st *store.Store, mgr *remotessh.Manager) Model {
 	applyTheme(st.GetSettings().Theme)
 	m := Model{st: st, mgr: mgr, focus: focusConn, fsEvents: make(chan fsEvent, 16), passCache: map[string]string{}, fwd: portfwd.New()}
 	m.refresh()
+	// 若上次退出时有会话快照，询问是否复原（可用 SSHTOOL_NO_RESTORE=1 关闭）。
+	m.restorePrompt()
 	return m
 }
 
@@ -356,7 +358,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.QuitMsg:
-		// 退出前清理所有端口转发监听，避免端口残留占用。
+		// 退出前记录会话布局（供下次启动复原），并清理所有端口转发监听。
+		m.saveSessionSnapshot()
 		if m.fwd != nil {
 			m.fwd.StopAll()
 		}

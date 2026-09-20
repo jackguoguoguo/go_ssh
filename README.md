@@ -61,6 +61,8 @@
   输入一条命令即可**并发**在每台上执行并汇总 stdout/退出码；单台超时/认证失败单独标注，结果对比一目了然
 - **连接健康巡检**（`ping` 元命令）：并发对所有（或过滤后的）连接做一次连通性 + 认证检查，
   区分**可达 / 认证失败 / 不可达 / 超时**并列出原因与耗时，适合快速定位「哪几台挂了」
+- **会话复原**：退出时记录打开的会话（`~/.sshtool/sessions.json`），下次启动询问是否复原标签布局；
+  需输入密码/口令的会话会被跳过以避免连环弹窗，可用 `SSHTOOL_NO_RESTORE=1` 关闭
 - **端口转发（本地 -L / 远端 -R）**：在命令行输入 `forward L <监听地址> <目标地址>` 或 `forward R ...`
   即可经当前 SSH 会话建立隧道，用 `forwards` 查看、`forward stop <id>` 停止；适合把内网服务映射出来或把本机服务暴露给远端
 - **跳板机（ProxyJump）**：设置环境变量 `SSHTOOL_PROXY_JUMP=[user@]host[:port]` 后，所有连接都会先经该跳板机建立，
@@ -207,6 +209,7 @@ sshtool -v        # 查看版本与配置文件路径
 | `SSHTOOL_RECONNECT_MAX` | `5` | 自动重连最大尝试次数，耗尽后置异常态并提示 `Ctrl+R` 手动重连 |
 | `SSHTOOL_RECONNECT_BASE` | `2` | 重连退避基数（秒），第 N 次重试等待 `base × 2^(N-2)` 秒，封顶 30 秒 |
 | `SSHTOOL_LOG_DIR` | 空（不记录） | 会话日志目录；非空时每个会话的终端输出落盘到 `<dir>/<user@host_port>/<id>_<时间>.log`，供 `Ctrl+L` 回放 |
+| `SSHTOOL_NO_RESTORE` | 空（启用复原） | 设为 `1` 时启动不询问是否复原上次会话（`~/.sshtool/sessions.json`） |
 
 ## SSH 密钥管理（`Ctrl+G`）
 
