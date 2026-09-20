@@ -54,6 +54,9 @@ func (m *Model) runMetaCommand(cmd string) bool {
 	case "batch":
 		_ = m.batchMeta(fields[1:])
 		return true
+	case "ping":
+		_ = m.pingMeta(fields[1:])
+		return true
 	}
 	return false
 }

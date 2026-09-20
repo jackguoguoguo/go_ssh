@@ -388,6 +388,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showBatchResult(msg)
 		return m, nil
 
+	case pingDoneMsg:
+		m.showPingResult(msg)
+		return m, nil
+
 	case fsLoadedMsg:
 		if m.dlg != nil && m.dlg.kind == dlgFile {
 			d := m.dlg
