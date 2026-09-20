@@ -30,6 +30,7 @@ func (m *Model) openKeyManager() tea.Cmd {
 			{Label: "① 生成新密钥", Desc: "ed25519 / ECDSA / RSA，可设注释与私钥口令"},
 			{Label: "② 推送公钥到服务器", Desc: "写入远端 authorized_keys，幂等去重、自动修权限"},
 			{Label: "③ 查看本机公钥", Desc: fmt.Sprintf("已发现 %d 个公钥", len(keys))},
+			{Label: "④ 标签与备注", Desc: "给本机密钥打标签（#prod 等）与备忘，供推送时辨认"},
 		},
 		onPick: func(m *Model, picked []int) {
 			switch picked[0] {
@@ -39,6 +40,8 @@ func (m *Model) openKeyManager() tea.Cmd {
 				m.openPushPickKey()
 			case 2:
 				m.showLocalKeys()
+			case 3:
+				m.openPickKeyForTags()
 			}
 		},
 	}
@@ -58,22 +61,29 @@ func (m *Model) showLocalKeys() {
 		return
 	}
 
+	ix := loadKeyTags()
 	var body []string
 	for i, k := range keys {
 		priv := "（无对应私钥）"
 		if k.HasPrivate {
 			priv = "已配对私钥"
 		}
+		tags := ix.TagsOf(k.Fingerprint)
+		comment := k.Comment
+		if comment == "" {
+			comment = "（无）"
+		}
 		body = append(body,
 			fmt.Sprintf("  %d. %s", i+1, filepath.Base(k.PublicPath)),
 			fmt.Sprintf("     算法  %s", k.Alg),
 			fmt.Sprintf("     指纹  %s", k.Fingerprint),
-			fmt.Sprintf("     注释  %s · %s", fallback(k.Comment, "（无）"), priv),
+			fmt.Sprintf("     标签  %s", tagsForDisplay(tags)),
+			fmt.Sprintf("     注释  %s · %s", comment, priv),
 			fmt.Sprintf("     公钥  %s", k.PublicPath),
 			"",
 		)
 	}
-	body = append(body, "  提示：选②可把其中任意一个推到服务器的 authorized_keys。")
+	body = append(body, "  提示：选②可把其中任意一个推到服务器的 authorized_keys；选④可给密钥打标签。")
 	m.dlg = &dlg{kind: dlgText, title: "本机公钥", body: body}
 }
 
@@ -164,9 +174,13 @@ func (m *Model) openPushPickKey() {
 		return
 	}
 
+	ix := loadKeyTags()
 	items := make([]pickItem, 0, len(keys)+1)
 	for _, k := range keys {
 		desc := k.Alg + "  " + fallback(k.Comment, "无注释")
+		if tags := tagString(ix.TagsOf(k.Fingerprint)); tags != "" {
+			desc += "  " + tags
+		}
 		if k.HasPrivate {
 			desc += "  · 已配对私钥"
 		}
@@ -220,6 +234,7 @@ func (m *Model) openPushPickTargets(key keytool.KeyInfo) {
 		return
 	}
 
+	keyTags := tagString(loadKeyTags().TagsOf(key.Fingerprint))
 	items := make([]pickItem, 0, len(conns))
 	needsSecret := false
 	for _, c := range conns {
@@ -227,21 +242,35 @@ func (m *Model) openPushPickTargets(key keytool.KeyInfo) {
 		if user == "" {
 			user = "root"
 		}
-		items = append(items, pickItem{
-			Label: c.Name,
-			Desc:  fmt.Sprintf("%s@%s:%d", user, c.Host, portOr22(c)),
-		})
+		desc := fmt.Sprintf("%s@%s:%d", user, c.Host, portOr22(c))
+		// 连接的分组作为「标签」维度展示，便于用过滤框按 #分组 快速筛选目标。
+		if c.Group != "" {
+			desc += "  #" + c.Group
+		}
+		items = append(items, pickItem{Label: c.Name, Desc: desc})
 		if secretMissing(c) {
 			needsSecret = true
 		}
 	}
 
+	title := "选择目标服务器（可多选，空格勾选 / a 全选）"
+	if keyTags != "" {
+		title = "选择目标服务器 · 密钥标签 " + keyTags + "（可多选，空格勾选 / a 全选）"
+	}
+	// 按密钥标签预勾选「分组命中」的目标，实现「把带 #prod 的密钥推给所有 prod 分组主机」。
+	checked := map[int]bool{}
+	for _, i := range connsMatchingTags(conns, loadKeyTags().TagsOf(key.Fingerprint)) {
+		checked[i] = true
+	}
+	if len(checked) > 0 {
+		title = fmt.Sprintf("%s · 已按标签预选 %d 台", title, len(checked))
+	}
 	m.dlg = &dlg{
 		kind:    dlgPick,
-		title:   "选择目标服务器（可多选，空格勾选 / a 全选）",
+		title:   title,
 		items:   items,
 		multi:   true,
-		checked: map[int]bool{},
+		checked: checked,
 		onPick: func(m *Model, picked []int) {
 			selected := make([]store.Connection, 0, len(picked))
 			for _, i := range picked {
