@@ -678,6 +678,7 @@ func helpBody() []string {
 		"                  文件内可 r 重命名 · m 改权限 · n 新建目录 · d 下载 · U 上传 · D 删除",
 		"  Enter           连接面板：连接服务器；在分组头上回车可展开/收起该分组",
 		"  命令行 theme    切换主题（theme dark / theme light）",
+		"  命令行 batch    多主机批量执行（batch web-01 或 batch，回车后输入命令）",
 		"  命令行 import   从 ~/.ssh/config 导入连接（import 或 import ssh /path）",
 		"  命令行 export   导出连接为 ssh_config 到 ~/.ssh/config.sshtool（export 或 export ssh /path）",
 		"  命令行 shell    打开一个「本地 shell」标签（真实 PTY，与 SSH 会话并列）",

@@ -51,6 +51,9 @@ func (m *Model) runMetaCommand(cmd string) bool {
 	case "forward", "forwards":
 		m.handleForward(fields[1:])
 		return true
+	case "batch":
+		_ = m.batchMeta(fields[1:])
+		return true
 	}
 	return false
 }

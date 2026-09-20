@@ -99,6 +99,10 @@ type Model struct {
 
 	broadcast bool // 广播模式：命令行发往所有已连接会话
 
+	// 批量执行（多主机）：目标连接与记忆的上次命令。
+	batchTargets []store.Connection
+	lastBatchCmd string
+
 	lastClickAt  time.Time
 	lastClickKey string
 
@@ -378,6 +382,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushDoneMsg:
 		m.showPushResult(msg.results, msg.remotePath)
+		return m, nil
+
+	case batchDoneMsg:
+		m.showBatchResult(msg)
 		return m, nil
 
 	case fsLoadedMsg:
