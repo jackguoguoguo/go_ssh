@@ -111,6 +111,24 @@ sshtool -v        # 查看版本与配置文件路径
 
 > 建议在支持 256 色的终端中运行（Windows Terminal / iTerm2 / GNOME Terminal 等）。
 
+## 非交互子命令（脚本 / CI）
+
+除 TUI 外，还提供 headless 子命令，复用 TUI 的批量执行与巡检内核，目标连接从配置文件读取：
+
+```sh
+sshtool exec  echo hello                      # 对全部连接并发执行命令
+sshtool exec  -g prod --timeout 30 df -h      # 只对名称/主机/用户/分组匹配 prod 的连接执行
+sshtool exec  -f json uptime                  # JSON 输出（仅白名单字段，不含凭据）
+sshtool exec  -f plain -g web cat /etc/hosts  # 仅打印 stdout（适合管道）
+sshtool ping                                  # 连通性巡检（可达 / 认证失败 / 不可达 / 超时）
+sshtool ping  -g prod -f json                 # 只巡检 prod 并输出 JSON
+```
+
+- 退出码：`0` 全部成功 · `1` 存在失败或无匹配目标 · `2` 用法错误
+- 输出格式：`text`（默认，含汇总）· `json` · `plain`（仅 stdout）
+- 主机指纹校验与 TUI 一致（`~/.ssh/known_hosts`）：目标主机需先用 TUI 连接并信任过；
+  批量脚本场景可设置 `SSHTOOL_INSECURE_HOST_KEYS=1` 退回不校验
+
 ## 快捷键
 
 | 快捷键 | 作用 |

@@ -552,21 +552,9 @@ func (m *Model) View() string {
 
 // ---------- 过滤 ----------
 
+// filterConnections 连接过滤委托给 store.FilterConnections，保证 UI 与 CLI 子命令语义一致。
 func filterConnections(in []store.Connection, q string) []store.Connection {
-	if q == "" {
-		return in
-	}
-	q = strings.ToLower(q)
-	out := make([]store.Connection, 0, len(in))
-	for _, c := range in {
-		if strings.Contains(strings.ToLower(c.Name), q) ||
-			strings.Contains(strings.ToLower(c.Host), q) ||
-			strings.Contains(strings.ToLower(c.User), q) ||
-			strings.Contains(strings.ToLower(c.Group), q) {
-			out = append(out, c)
-		}
-	}
-	return out
+	return store.FilterConnections(in, q)
 }
 
 func filterFavorites(in []store.FavoriteCmd, q string) []store.FavoriteCmd {

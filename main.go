@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"sshtool/internal/cli"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 	"sshtool/internal/ui"
@@ -26,9 +27,29 @@ func main() {
 			fmt.Printf("sshtool %s (%s/%s, go %s)\n", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 			fmt.Printf("配置文件: %s\n", store.DefaultPath())
 			return
+		case "exec", "ping":
+			// 非交互子命令：复用 TUI 的批量执行 / 巡检内核，供脚本与 CI 使用。
+			st, err := store.Load()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "警告：加载配置失败，将使用空配置。", err)
+			}
+			if st == nil {
+				st = store.New(store.DefaultPath())
+			}
+			var code int
+			if os.Args[1] == "exec" {
+				code = cli.Exec(st, os.Args[2:], os.Stdout, os.Stderr)
+			} else {
+				code = cli.Ping(st, os.Args[2:], os.Stdout, os.Stderr)
+			}
+			os.Exit(code)
 		case "-h", "--help":
-			fmt.Println("用法: sshtool [-v|--version]")
-			fmt.Println("终端内 SSH 多会话管理工具，启动后按 Ctrl+H 查看快捷键。")
+			fmt.Println("用法:")
+			fmt.Println("  sshtool                      启动交互式 TUI（按 Ctrl+H 查看快捷键）")
+			fmt.Println("  sshtool exec  [选项] <命令>  对多台主机批量执行命令（headless）")
+			fmt.Println("  sshtool ping  [选项]         对多台主机做连通性巡检（headless）")
+			fmt.Println("  sshtool -v | --version       查看版本与配置文件路径")
+			fmt.Println("exec/ping 选项: -g 关键词（过滤目标） · --timeout 秒 · -f text|json|plain")
 			return
 		}
 	}
