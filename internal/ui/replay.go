@@ -26,11 +26,19 @@ func (m *Model) openReplay() tea.Cmd {
 		m.setMsg("当前没有活动的会话")
 		return nil
 	}
+	if isLocalShell(s) {
+		m.setMsg("本地 shell 不支持会话日志回放（Ctrl+L 仅用于 SSH 会话）")
+		return nil
+	}
 	if !s.Logging() {
 		m.setMsg("当前会话未记录日志：设置环境变量 SSHTOOL_LOG_DIR 指向目录后重连即开启记录")
 		return nil
 	}
-	path := s.LogPath()
+	rs := sshSessionOf(s)
+	if rs == nil {
+		return nil
+	}
+	path := rs.LogPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		m.setMsg("读取回放日志失败：" + err.Error())

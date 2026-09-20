@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"sshtool/internal/keytool"
+	"sshtool/internal/localshell"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 	"sshtool/internal/vt"
@@ -36,7 +37,8 @@ type Model struct {
 	focus     int
 	inputMode bool // true 表示终端下方的命令行处于编辑状态
 
-	sessions []*remotessh.Session
+	sessions []tabSession // 标签栏：SSH 会话 + 本地 shell，顺序见 rebuildTabs
+	locals   []*localshell.Session
 	activeID string
 
 	connList []store.Connection
@@ -202,18 +204,29 @@ func (m *Model) refresh() {
 }
 
 // refreshSessions 同步会话列表并保证 activeID 有效。
+// rebuildTabs 重建标签列表：先 SSH 会话（按打开顺序），再本地 shell。
+func (m *Model) rebuildTabs() {
+	m.sessions = m.sessions[:0]
+	for _, s := range m.mgr.List() {
+		m.sessions = append(m.sessions, s)
+	}
+	for _, ls := range m.locals {
+		m.sessions = append(m.sessions, ls)
+	}
+}
+
 func (m *Model) refreshSessions() {
-	m.sessions = m.mgr.List()
+	m.rebuildTabs()
 	found := false
 	for _, s := range m.sessions {
-		if s.ID == m.activeID {
+		if s.TabID() == m.activeID {
 			found = true
 			break
 		}
 	}
 	if !found {
 		if len(m.sessions) > 0 {
-			m.activeID = m.sessions[len(m.sessions)-1].ID
+			m.activeID = m.sessions[len(m.sessions)-1].TabID()
 		} else {
 			m.activeID = ""
 		}
@@ -221,21 +234,22 @@ func (m *Model) refreshSessions() {
 }
 
 // activeSession 返回当前活动会话，可能为 nil。
-func (m *Model) activeSession() *remotessh.Session {
+func (m *Model) activeSession() tabSession {
 	if m.activeID == "" {
 		return nil
 	}
-	s, ok := m.mgr.Get(m.activeID)
-	if !ok {
-		return nil
+	for _, s := range m.sessions {
+		if s.TabID() == m.activeID {
+			return s
+		}
 	}
-	return s
+	return nil
 }
 
 // activeIndex 返回当前活动会话在标签栏中的下标。
 func (m *Model) activeIndex() int {
 	for i, s := range m.sessions {
-		if s.ID == m.activeID {
+		if s.TabID() == m.activeID {
 			return i
 		}
 	}
@@ -469,6 +483,9 @@ func (m *Model) applyTermSize() {
 	// 尺寸变了，选区坐标与搜索高亮都失效，先复位再广播尺寸
 	m.resetTermModes()
 	m.mgr.ResizeAll(l.termCol, l.termRow)
+	for _, ls := range m.locals {
+		ls.Resize(l.termCol, l.termRow)
+	}
 }
 
 // setMsg 设置状态栏提示，并在 5 秒后自动清除。

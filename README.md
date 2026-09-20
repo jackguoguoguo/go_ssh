@@ -52,6 +52,9 @@
   ssh_config 到 `~/.ssh/config.sshtool`（亦可 `export ssh /path`，不会覆盖真实 `~/.ssh/config`）
 - **ssh-agent 集成 + 私钥口令缓存**：`SSH_AUTH_SOCK` 可用时，认证会自动附带 agent 里的公钥
   （本地私钥缺失/加密也能登录）；私钥口令在本进程内按私钥路径缓存，同一私钥连接多台主机只问一次
+- **本地 shell 标签**：命令行输入 `shell` 即可在本机开一个**真实 PTY** 的 shell 标签（Windows 走 ConPTY，
+  Unix 走 pty），与 SSH 会话并列在同一个标签栏；支持窗口尺寸同步，因此 `vim` / `top` 这类全屏程序也能跑
+  （本地 shell 不参与广播，也没有远端文件浏览器与会话回放）
 
 ## 构建与运行
 
@@ -137,6 +140,7 @@ sshtool -v        # 查看版本与配置文件路径
 | `import ssh /path/to/config` | 从指定 ssh_config 文件导入 |
 | `export` | 把连接导出为 ssh_config 到 `~/.ssh/config.sshtool` |
 | `export ssh /path/to/config` | 导出到指定路径（不会覆盖真实 `~/.ssh/config`） |
+| `shell` | 打开一个「本地 shell」标签（本机真实 PTY，与 SSH 会话并列） |
 
 ## 鼠标
 

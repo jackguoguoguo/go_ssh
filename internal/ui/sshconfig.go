@@ -24,7 +24,7 @@ func defaultExportPath() string {
 }
 
 // runMetaCommand 处理命令行里的元命令（无需已连接会话）；返回是否已处理。
-// 支持：theme <name> / import [ssh] [path] / export [ssh] [path]。
+// 支持：theme <name> / import [ssh] [path] / export [ssh] [path] / shell。
 func (m *Model) runMetaCommand(cmd string) bool {
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
@@ -43,6 +43,9 @@ func (m *Model) runMetaCommand(cmd string) bool {
 		return true
 	case "export":
 		m.handleExportSSHConfig(metaArg(fields[1:]))
+		return true
+	case "shell":
+		_ = m.openLocalShell()
 		return true
 	}
 	return false

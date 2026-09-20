@@ -52,6 +52,15 @@ func (m *Manager) Events() <-chan Event { return m.events }
 // Output 返回全局输出通知通道，UI 消费后触发重绘。
 func (m *Manager) Output() <-chan string { return m.output }
 
+// NotifyOutput 供非 SSH 会话（如本地 shell）投递输出通知，复用同一条重绘通道。
+// 通道满时丢弃，与 SSH 会话的行为一致（不阻塞输出读取）。
+func (m *Manager) NotifyOutput(id string) {
+	select {
+	case m.output <- id:
+	default:
+	}
+}
+
 // Get 按连接 ID 取会话。
 func (m *Manager) Get(id string) (*Session, bool) {
 	m.mu.RLock()

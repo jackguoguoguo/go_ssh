@@ -187,7 +187,7 @@ func (m *Model) buildTabs(w int) (string, []tabBound) {
 		dot := dotStyle.Render("●")
 
 		body := num + " " + label
-		if s.ID == m.activeID {
+		if s.TabID() == m.activeID {
 			body = lipgloss.NewStyle().Background(cAccent).Foreground(cSelFg).Bold(true).Render(body)
 		} else {
 			body = lipgloss.NewStyle().Foreground(cFg).Render(body)
@@ -197,7 +197,7 @@ func (m *Model) buildTabs(w int) (string, []tabBound) {
 		bodyW := lipgloss.Width(dot) + lipgloss.Width(body)
 		whole := " " + dot + body + closeBtn
 		add(whole, tabBound{
-			id:  s.ID,
+			id:  s.TabID(),
 			cx0: x + 1 + bodyW,
 			cx1: x + 1 + bodyW + lipgloss.Width(closeBtn) - 1,
 		})
@@ -231,10 +231,15 @@ func (m *Model) renderHeader(l layout) string {
 		case remotessh.StateError:
 			stateStyle = stateStyle.Foreground(cErr)
 		}
-		c := s.Conn
+		c := s.ConnInfo()
+		port := ""
+		if !isLocalShell(s) {
+			// 本地 shell 没有端口概念，省略以免出现 ":0"
+			port = styleDim.Render(fmt.Sprintf(":%d", c.Port))
+		}
 		info = "  " +
 			lipgloss.NewStyle().Foreground(cAccent).Render(c.User+"@"+c.Host) +
-			styleDim.Render(fmt.Sprintf(":%d", c.Port)) +
+			port +
 			styleDim.Render("  ·  ") +
 			stateStyle.Render(s.State().String())
 		if err := s.Err(); err != nil {

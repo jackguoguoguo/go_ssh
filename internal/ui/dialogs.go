@@ -680,6 +680,7 @@ func helpBody() []string {
 		"  命令行 theme    切换主题（theme dark / theme light）",
 		"  命令行 import   从 ~/.ssh/config 导入连接（import 或 import ssh /path）",
 		"  命令行 export   导出连接为 ssh_config 到 ~/.ssh/config.sshtool（export 或 export ssh /path）",
+		"  命令行 shell    打开一个「本地 shell」标签（真实 PTY，与 SSH 会话并列）",
 		"  Ctrl+L          会话回放：重放当前会话已落盘的终端日志（需设置 SSHTOOL_LOG_DIR）",
 		"                  认证会自动附带 ssh-agent（SSH_AUTH_SOCK 可用时）；同一私钥的口令在本进程内只问一次",
 		"  Ctrl+P          把输入行内容加入收藏",

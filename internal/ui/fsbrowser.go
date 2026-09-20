@@ -42,7 +42,10 @@ func (m *Model) openFileBrowser() tea.Cmd {
 	if s == nil {
 		return m.setMsg("请先连接一台服务器")
 	}
-	fs, err := m.mgr.FS(s.ID)
+	if isLocalShell(s) {
+		return m.setMsg("本地 shell 没有远端文件浏览器（Ctrl+O 仅用于 SSH 会话）")
+	}
+	fs, err := m.mgr.FS(s.TabID())
 	if err != nil {
 		return m.setMsg("打开 SFTP 失败：" + err.Error())
 	}

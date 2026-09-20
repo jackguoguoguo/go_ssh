@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"sshtool/internal/localshell"
 	"sshtool/internal/remotessh"
 	"sshtool/internal/store"
 )
@@ -204,7 +205,7 @@ func (m *Model) switchTo(i int) {
 	if i >= len(m.sessions) {
 		i = 0
 	}
-	m.activeID = m.sessions[i].ID
+	m.activeID = m.sessions[i].TabID()
 	m.focus = focusTerm
 	m.inputMode = false
 }
@@ -246,13 +247,17 @@ func (m *Model) runCommand(cmd string) {
 		m.setMsg("会话当前不可写（" + s.State().String() + "），可按 Ctrl+R 重连")
 		return
 	}
-	m.dispatch(cmd, []*remotessh.Session{s})
+	m.dispatch(cmd, []tabSession{s})
 }
 
-// connectedSessions 返回所有可写会话。
-func (m *Model) connectedSessions() []*remotessh.Session {
-	out := make([]*remotessh.Session, 0, len(m.sessions))
+// connectedSessions 返回所有可写的 **SSH** 会话。
+// 广播只针对远端主机：把命令广播到本地 shell 风险过高，故本地 shell 不参与。
+func (m *Model) connectedSessions() []tabSession {
+	out := make([]tabSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
+		if isLocalShell(s) {
+			continue
+		}
 		if s.State() == remotessh.StateConnected {
 			out = append(out, s)
 		}
@@ -278,7 +283,7 @@ func (m *Model) toggleBroadcast() tea.Cmd {
 }
 
 // dispatch 先做危险命令检查，再真正下发。
-func (m *Model) dispatch(cmd string, targets []*remotessh.Session) {
+func (m *Model) dispatch(cmd string, targets []tabSession) {
 	reason := risky(cmd)
 	if reason == "" {
 		m.deliver(cmd, targets)
@@ -303,13 +308,13 @@ func (m *Model) dispatch(cmd string, targets []*remotessh.Session) {
 }
 
 // deliver 真正把命令写进目标会话的 stdin。
-func (m *Model) deliver(cmd string, targets []*remotessh.Session) {
+func (m *Model) deliver(cmd string, targets []tabSession) {
 	for _, s := range targets {
 		_ = s.Write([]byte(cmd + "\r"))
 	}
 	if len(targets) == 1 {
 		m.trackCwd(cmd)
-		m.st.AddHistory(cmd, targets[0].Conn.Host)
+		m.st.AddHistory(cmd, targets[0].ConnInfo().Host)
 	} else {
 		// 广播只记一条历史，避免把同一条命令刷进历史面板 N 次
 		m.st.AddHistory(cmd, fmt.Sprintf("广播(%d 台)", len(targets)))
@@ -476,6 +481,16 @@ func (m *Model) closeActiveSession() {
 	if m.activeID == "" {
 		return
 	}
+	// 本地 shell 不归 Manager 管，单独关闭。
+	for i, ls := range m.locals {
+		if ls.TabID() == m.activeID {
+			ls.Close()
+			m.locals = append(m.locals[:i], m.locals[i+1:]...)
+			m.refreshSessions()
+			m.setMsg("本地 shell 已关闭")
+			return
+		}
+	}
 	m.mgr.Close(m.activeID)
 	m.refreshSessions()
 	m.setMsg("会话已关闭")
@@ -487,7 +502,11 @@ func (m *Model) reconnectActive() {
 		m.setMsg("没有可重连的会话")
 		return
 	}
-	c := s.Conn
+	if isLocalShell(s) {
+		m.setMsg("本地 shell 无需重连")
+		return
+	}
+	c := s.ConnInfo()
 	m.mgr.Close(c.ID)
 	m.refreshSessions()
 	m.connectConn(c)
@@ -541,6 +560,23 @@ func (m *Model) connectConn(c store.Connection) tea.Cmd {
 	}
 
 	m.doOpen(c, secret)
+	return nil
+}
+
+// openLocalShell 打开一个本地 shell 标签（真实 PTY，与 SSH 会话并列展示）。
+func (m *Model) openLocalShell() tea.Cmd {
+	l := m.computeLayout()
+	mgr := m.mgr
+	ls, err := localshell.Open(l.termCol, l.termRow, m.st.GetSettings().Scrollback,
+		func(id string) { mgr.NotifyOutput(id) })
+	if err != nil {
+		return m.setMsg("打开本地 shell 失败：" + err.Error())
+	}
+	m.locals = append(m.locals, ls)
+	m.refreshSessions()
+	m.activeID = ls.TabID()
+	m.focus = focusTerm
+	m.inputMode = false
 	return nil
 }
 
