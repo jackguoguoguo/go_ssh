@@ -221,9 +221,9 @@ func (m *Model) fileKey(d *dlg, msg tea.KeyMsg) {
 				m.fsStartOp(d, "chmod", "权限(八进制，如 644)：", "", e.IsDir)
 			}
 			return
-		case d.fsFilter == "" && (r == 'd'): // 下载到本地
-			if e, ok := d.currentFsEntry(); ok && !e.IsDir {
-				m.fsStartOp(d, "download", "下载到本地路径：", e.Name, false)
+		case d.fsFilter == "" && (r == 'd'): // 下载到本地（目录则递归）
+			if e, ok := d.currentFsEntry(); ok {
+				m.fsStartOp(d, "download", "下载到本地路径：", e.Name, e.IsDir)
 			}
 			return
 		case d.fsFilter == "" && (r == 'U'): // 上传本地文件到当前目录
@@ -307,26 +307,34 @@ func (m *Model) fsSubmitOp(d *dlg) {
 		d.fsLoading = true
 		m.afterCmd = m.fsChmodCmd(d, d.fsInputPath, mode)
 	case "download":
-		if d.fsInputPath == "" || d.fsInputIsDir {
-			m.setMsg("仅支持下载文件")
+		if d.fsInputPath == "" {
 			return
 		}
 		local := input
-		if filepath.IsAbs(local) {
-			// 直接使用
-		} else {
+		if !filepath.IsAbs(local) {
 			local = filepath.Join(".", local) // 相对当前目录
 		}
 		d.fsLoading = true
-		m.afterCmd = m.fsDownloadCmd(d, d.fsInputPath, local)
+		if d.fsInputIsDir {
+			// 目录：递归下载整棵子树到本地目录
+			m.afterCmd = m.fsDownloadTreeCmd(d, d.fsInputPath, local)
+		} else {
+			m.afterCmd = m.fsDownloadCmd(d, d.fsInputPath, local)
+		}
 	case "upload":
 		local := input
 		if !filepath.IsAbs(local) {
 			local = filepath.Join(".", local)
 		}
-		remote := joinPath(d.fsPath, filepath.Base(local))
 		d.fsLoading = true
-		m.afterCmd = m.fsUploadCmd(d, local, remote)
+		if fi, err := os.Stat(local); err == nil && fi.IsDir() {
+			// 目录：递归上传整棵子树到当前远端目录下的同名目录
+			remote := joinPath(d.fsPath, filepath.Base(filepath.Clean(local)))
+			m.afterCmd = m.fsUploadTreeCmd(d, local, remote)
+		} else {
+			remote := joinPath(d.fsPath, filepath.Base(local))
+			m.afterCmd = m.fsUploadCmd(d, local, remote)
+		}
 	}
 }
 

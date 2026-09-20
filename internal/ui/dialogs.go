@@ -291,7 +291,8 @@ func (m *Model) renderDialog() string {
 				lines = append(lines, styleDim.Render("  过滤: "+d.fsFilter))
 			}
 			lines = append(lines, styleDim.Render("  Enter 打开/进入 · e 编辑 · u 上级 · ~ 家目录 · r 重命名 · m 权限 · n 新建目录"))
-			lines = append(lines, styleDim.Render("  d 下载到本地 · U 上传本地文件 · D 删除 · / 过滤 · Esc 关闭"))
+			lines = append(lines, styleDim.Render("  d 下载到本地 · U 上传本地文件/目录 · D 删除 · / 过滤 · Esc 关闭"))
+			lines = append(lines, styleDim.Render("  目录会递归传输（保留子目录结构）"))
 		}
 
 	case dlgForm, dlgSecret:

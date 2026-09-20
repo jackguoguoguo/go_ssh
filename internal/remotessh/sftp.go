@@ -141,6 +141,23 @@ func (c *FSClient) removeDirRecursive(p string) error {
 // Getwd 返回 SFTP 当前工作目录（通常是登录用户的家目录）。
 func (c *FSClient) Getwd() (string, error) { return c.c.Getwd() }
 
+// Stat 返回远端路径的文件信息。
+func (c *FSClient) Stat(p string) (os.FileInfo, error) { return c.c.Stat(p) }
+
+// Walk 递归遍历远端目录树（前序）。回调收到远端路径（POSIX 分隔）与是否为目录。
+func (c *FSClient) Walk(root string, fn func(p string, isDir bool) error) error {
+	w := c.c.Walk(root)
+	for w.Step() {
+		if err := w.Err(); err != nil {
+			return err
+		}
+		if err := fn(w.Path(), w.Stat().IsDir()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func sortEntries(e []Entry) {
 	sort.SliceStable(e, func(i, j int) bool {
 		if e[i].IsDir != e[j].IsDir {

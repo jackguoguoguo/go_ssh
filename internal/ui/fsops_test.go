@@ -118,12 +118,13 @@ func TestFsUploadDownloadEnter(t *testing.T) {
 
 	d.fsCursor = 1 // 目录
 	m.fileKey(d, fsTestKey('d'))
-	if d.fsOp != "" {
-		t.Fatal("目录不应进入下载态")
+	if d.fsOp != "download" || !d.fsInputIsDir || d.fsInput != "d" {
+		t.Fatalf("目录应进入递归下载态：%+v", d)
 	}
+	m.fileKey(d, tea.KeyMsg{Type: tea.KeyEsc})
 	d.fsCursor = 0
 	m.fileKey(d, fsTestKey('d'))
-	if d.fsOp != "download" || d.fsInput != "a.txt" {
+	if d.fsOp != "download" || d.fsInput != "a.txt" || d.fsInputIsDir {
 		t.Fatalf("文件应进入下载态：%+v", d)
 	}
 }
