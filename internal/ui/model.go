@@ -103,6 +103,9 @@ type Model struct {
 	batchTargets []store.Connection
 	lastBatchCmd string
 
+	// rotate 密钥轮换向导的中间状态（生成新密钥 → 选旧密钥 → 选主机 → 执行）。
+	rotate *rotateState
+
 	lastClickAt  time.Time
 	lastClickKey string
 
@@ -405,6 +408,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case auditDoneMsg:
 		m.showAuditResult(msg)
+		return m, nil
+
+	case rotateGenDoneMsg:
+		if msg.err != "" {
+			m.dlg = &dlg{kind: dlgText, title: "生成失败",
+				body: append([]string{""}, wrapText("  "+msg.err, max(30, m.width-16))...)}
+			_ = m.setMsg("生成新密钥失败：" + msg.err)
+			return m, nil
+		}
+		m.openRotatePickOld(msg.info)
+		return m, nil
+
+	case rotateDoneMsg:
+		m.showRotateResult(msg)
 		return m, nil
 
 	case fsLoadedMsg:

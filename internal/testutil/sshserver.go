@@ -94,6 +94,11 @@ func StartSSHServer(t *testing.T) *SSHServer {
 			}
 			return nil, fmt.Errorf("认证失败")
 		},
+		// 接受任意公钥：让「用私钥登录」这条路径也能在测试里走通
+		// （例如密钥轮换需要先验证新私钥确实能登录，再移除旧密钥）。
+		PublicKeyCallback: func(c sshx.ConnMetadata, key sshx.PublicKey) (*sshx.Permissions, error) {
+			return nil, nil
+		},
 	}
 	cfg.AddHostKey(signer)
 

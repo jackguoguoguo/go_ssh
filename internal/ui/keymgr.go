@@ -33,6 +33,7 @@ func (m *Model) openKeyManager() tea.Cmd {
 			{Label: "④ 标签与备注", Desc: "给本机密钥打标签（#prod 等）与备忘，供推送时辨认"},
 			{Label: "⑤ 备份与恢复", Desc: "加密归档 ~/.ssh 密钥与 config，或从备份还原"},
 			{Label: "⑥ 远端公钥盘点", Desc: "拉取各主机 authorized_keys，与本机密钥比对（缺失 / 废弃）"},
+			{Label: "⑦ 密钥轮换", Desc: "生成新密钥 → 分发 → 验证登录 → 移除旧密钥"},
 		},
 		onPick: func(m *Model, picked []int) {
 			switch picked[0] {
@@ -48,6 +49,8 @@ func (m *Model) openKeyManager() tea.Cmd {
 				m.openBackupMenu()
 			case 5:
 				m.openAuditPickTargets()
+			case 6:
+				m.openRotateWizard()
 			}
 		},
 	}
