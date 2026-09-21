@@ -31,6 +31,7 @@ func (m *Model) openKeyManager() tea.Cmd {
 			{Label: "② 推送公钥到服务器", Desc: "写入远端 authorized_keys，幂等去重、自动修权限"},
 			{Label: "③ 查看本机公钥", Desc: fmt.Sprintf("已发现 %d 个公钥", len(keys))},
 			{Label: "④ 标签与备注", Desc: "给本机密钥打标签（#prod 等）与备忘，供推送时辨认"},
+			{Label: "⑤ 备份与恢复", Desc: "加密归档 ~/.ssh 密钥与 config，或从备份还原"},
 		},
 		onPick: func(m *Model, picked []int) {
 			switch picked[0] {
@@ -42,6 +43,8 @@ func (m *Model) openKeyManager() tea.Cmd {
 				m.showLocalKeys()
 			case 3:
 				m.openPickKeyForTags()
+			case 4:
+				m.openBackupMenu()
 			}
 		},
 	}
@@ -360,6 +363,8 @@ func pushKeysCmd(key keytool.KeyInfo, conns []store.Connection, remotePath, shar
 				if !secretMissing(c) {
 					secret = secretOf(c)
 				}
+				// 快照式保险：先回传远端 authorized_keys 存档，再写入。
+				snapshotRemoteKeys(c, secret, remotePath)
 				results[i] = keytool.Push(keytool.PushOptions{
 					Conn:       c,
 					Secret:     secret,

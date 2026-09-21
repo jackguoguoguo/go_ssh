@@ -9,12 +9,13 @@ import (
 	"sshtool/internal/store"
 )
 
-// withTempHome 把用户主目录指向临时目录，使 ~/.sshtool/key-tags.json 落在沙箱内。
-func withTempHome(t *testing.T) {
+// withTempHome 把用户主目录指向临时目录，使 ~/.sshtool 下的文件落在沙箱内，返回该目录。
+func withTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
+	return dir
 }
 
 func TestConnsMatchingTags(t *testing.T) {

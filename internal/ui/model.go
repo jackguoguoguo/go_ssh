@@ -395,6 +395,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showPingResult(msg)
 		return m, nil
 
+	case backupDoneMsg:
+		m.showBackupResult(msg)
+		return m, nil
+
+	case restoreDoneMsg:
+		m.showRestoreResult(msg)
+		return m, nil
+
 	case fsLoadedMsg:
 		if m.dlg != nil && m.dlg.kind == dlgFile {
 			d := m.dlg
