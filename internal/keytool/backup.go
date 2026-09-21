@@ -464,7 +464,8 @@ func SnapshotRemoteAuthorizedKeys(conn store.Connection, secret, remotePath stri
 	if p == "" {
 		p = DefaultRemotePath
 	}
-	out, errOut, err := remotessh.RunOnce(conn, secret, "cat "+shellQuote(normalizeRemotePath(p)), timeout)
+	// 必须用双引号：normalizeRemotePath 会把 ~ 展开成 $HOME，单引号会阻止变量展开。
+	out, errOut, err := remotessh.RunOnce(conn, secret, "cat "+shellDoubleQuote(normalizeRemotePath(p)), timeout)
 	if err != nil {
 		msg := strings.TrimSpace(errOut)
 		if msg == "" {
@@ -473,6 +474,11 @@ func SnapshotRemoteAuthorizedKeys(conn store.Connection, secret, remotePath stri
 		return "", fmt.Errorf("读取远端 %s 失败：%s", p, msg)
 	}
 	return out, nil
+}
+
+// shellDoubleQuote 用双引号包裹并转义内部双引号；保留 $ 以便 $HOME 这类变量被展开。
+func shellDoubleQuote(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
 // SaveRemoteSnapshot 把远端 authorized_keys 内容存进备份目录，便于误删后回滚。

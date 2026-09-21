@@ -403,6 +403,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showRestoreResult(msg)
 		return m, nil
 
+	case auditDoneMsg:
+		m.showAuditResult(msg)
+		return m, nil
+
 	case fsLoadedMsg:
 		if m.dlg != nil && m.dlg.kind == dlgFile {
 			d := m.dlg
