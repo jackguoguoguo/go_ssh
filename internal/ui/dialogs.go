@@ -61,6 +61,10 @@ type dlg struct {
 	checked map[int]bool
 	onPick  func(m *Model, picked []int)
 
+	// filterIdxFn 为非空时，选择器改用它按下标过滤（用于标签组合查询这类
+	// 无法用子串匹配表达的语义）；返回 true 表示该项可见。
+	filterIdxFn func(idx int, query string) bool
+
 	// dlgFile 专用（远端文件浏览器）
 	fs        *remotessh.FSClient
 	fsPath    string
@@ -415,7 +419,13 @@ func (m *Model) visiblePick(d *dlg) []int {
 	q := strings.ToLower(strings.TrimSpace(d.filter))
 	out := make([]int, 0, len(d.items))
 	for i, it := range d.items {
-		if q == "" || strings.Contains(strings.ToLower(it.Label), q) || strings.Contains(strings.ToLower(it.Desc), q) {
+		switch {
+		case d.filterIdxFn != nil:
+			// 自定义过滤（如标签组合查询）：空查询交给实现方决定，这里原样透传。
+			if d.filterIdxFn(i, q) {
+				out = append(out, i)
+			}
+		case q == "" || strings.Contains(strings.ToLower(it.Label), q) || strings.Contains(strings.ToLower(it.Desc), q):
 			out = append(out, i)
 		}
 	}

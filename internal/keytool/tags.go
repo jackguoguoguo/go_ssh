@@ -105,3 +105,55 @@ func MatchTags(have, want []string, matchAll bool) bool {
 func HasTag(have []string, tag string) bool {
 	return MatchTags(have, []string{tag}, true)
 }
+
+// ParseTagQuery 解析组合查询串：
+//   - `,` 分隔的是「或」关系（满足其中一组即可）；
+//   - 一组内以空格分隔（可带 `+` / `#` 前缀）表示「与」关系（全部满足）。
+//
+// 例：`prod` → 含 prod；`prod +ci` → 同时含 prod 与 ci；`prod,staging` → 含其一。
+func ParseTagQuery(query string) [][]string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	var groups [][]string
+	for _, part := range strings.Split(query, ",") {
+		var and []string
+		for _, tok := range strings.Fields(part) {
+			tok = strings.TrimSpace(strings.TrimPrefix(tok, "+"))
+			tok = NormalizeTag(tok)
+			if tok == "" {
+				continue
+			}
+			and = append(and, tok)
+		}
+		groups = append(groups, and)
+	}
+	return groups
+}
+
+// MatchTagQuery 判断 have 是否满足组合查询：任一「或」组内全部命中即算匹配。
+// 空查询恒为匹配（等价于不过滤）。
+func MatchTagQuery(have []string, query string) bool {
+	groups := ParseTagQuery(query)
+	if len(groups) == 0 {
+		return true
+	}
+	set := map[string]bool{}
+	for _, h := range NormalizeTags(have) {
+		set[h] = true
+	}
+	for _, and := range groups {
+		ok := len(and) > 0
+		for _, t := range and {
+			if !set[t] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}

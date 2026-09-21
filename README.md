@@ -34,7 +34,8 @@
   以及把现有公钥一键推到远端 `authorized_keys`（自定义端口、用户名、目标路径，自动修权限、幂等去重、
   支持一次分发到多台主机）
 - **密钥标签与备注**：给本机密钥打 `#prod` / `#ci` 等标签（存于 `~/.sshtool/key-tags.json`，与文件位置解耦）；
-  推送公钥时按密钥标签**自动预勾选**分组匹配的目标主机，实现「把 `#prod` 的密钥推给所有 `prod` 分组主机」
+  推送公钥时按密钥标签**自动预勾选**分组匹配的目标主机，实现「把 `#prod` 的密钥推给所有 `prod` 分组主机」；
+  密钥选择器支持组合查询：`prod +ci`（同时含两者）、`prod,staging`（含其一）
 - **密钥备份与恢复**（`Ctrl+G` → ⑤）：把 `~/.ssh` 下的 `id_*`（私钥+公钥）、`config`、`known_hosts`
   打包为 tar.gz，再用**口令派生密钥**（scrypt + AES-256-GCM）整体加密存到 `~/.sshtool/backups/ssh-keys-<时间>.enc`；
   恢复时解密、按 manifest **校验指纹**后还原（可选覆盖或改名导入）；
@@ -312,7 +313,7 @@ chmod 600 "$P"; chown "$(id -un)" "$P" "$(dirname "$P")"
 - 标签写在公钥注释里，用 `#` 分隔，例如 `deploy@CI #prod #ci #readonly`
 - `~/.sshtool/keys.json` 维护 `{fingerprint, path, tags[], created_at, notes}` 索引，
   与注释双向同步（改注释即改标签）
-- `Ctrl+G` 的选择器支持 `#prod` 这样的标签过滤，以及 `prod +ci`（与）、`prod,staging`（或）组合查询
+- ✔ `Ctrl+G` 的密钥选择器支持 `#prod` 这样的标签过滤，以及 `prod +ci`（与）、`prod,staging`（或）组合查询
 - 顺带把连接也打上标签，就能做「把带 `#prod` 的密钥推给所有打 `prod` 标签的主机」这种批量操作
 
 ### ③ 其它值得做的（优先级从高到低）

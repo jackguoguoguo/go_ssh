@@ -67,7 +67,7 @@ func (m *Model) openPickKeyForTags() {
 	}
 	m.dlg = &dlg{
 		kind:  dlgPick,
-		title: "选择要编辑标签的密钥",
+		title: "选择要编辑标签的密钥（可直接输入标签查询，如 #prod 或 prod +ci）",
 		items: items,
 		onPick: func(m *Model, picked []int) {
 			if len(picked) == 0 {
@@ -75,6 +75,16 @@ func (m *Model) openPickKeyForTags() {
 			}
 			m.openEditKeyTags(keys[picked[0]])
 		},
+	}
+	// 支持标签组合查询：`,` 为或、空格/`+` 为与。
+	m.dlg.filterIdxFn = func(idx int, q string) bool {
+		if idx < 0 || idx >= len(keys) {
+			return false
+		}
+		if strings.TrimSpace(q) == "" {
+			return true
+		}
+		return keytool.MatchTagQuery(ix.TagsOf(keys[idx].Fingerprint), q)
 	}
 }
 

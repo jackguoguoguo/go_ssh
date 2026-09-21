@@ -199,7 +199,7 @@ func (m *Model) openPushPickKey() {
 
 	m.dlg = &dlg{
 		kind:  dlgPick,
-		title: "选择要推送的本机公钥",
+		title: "选择要推送的本机公钥（可输入标签查询，如 #prod 或 prod,staging）",
 		items: items,
 		onPick: func(m *Model, picked []int) {
 			idx := picked[0]
@@ -209,6 +209,16 @@ func (m *Model) openPushPickKey() {
 			}
 			m.openPushPickTargets(keys[idx])
 		},
+	}
+	// 支持标签组合查询；「手动输入公钥路径」这一项始终可见（它是兜底入口）。
+	m.dlg.filterIdxFn = func(idx int, q string) bool {
+		if idx >= len(keys) {
+			return true
+		}
+		if strings.TrimSpace(q) == "" {
+			return true
+		}
+		return keytool.MatchTagQuery(ix.TagsOf(keys[idx].Fingerprint), q)
 	}
 }
 
