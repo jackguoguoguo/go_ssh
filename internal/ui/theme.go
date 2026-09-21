@@ -8,6 +8,15 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+// go-runewidth 在 Windows 上按 GetConsoleOutputCP() 决定是否启用「东亚歧义宽度」：
+// 代码页 932/936/949/950 会把 ← → · ● … 这些歧义字符算成 2 列。而 lipgloss 内部走
+// x/ansi，同一批字符恒算 1 列 —— 两边口径不一致，面板边框就会与内容错位。
+// 这里统一钉死为「窄」，与 lipgloss 对齐；终端侧也必须按 1 列渲染
+// （Windows Terminal + Cascadia Mono 默认如此）。
+func init() {
+	runewidth.DefaultCondition.EastAsianWidth = false
+}
+
 // 配色（tokyo-night 风格）。
 var (
 	cBg      = lipgloss.Color("#16161e")
