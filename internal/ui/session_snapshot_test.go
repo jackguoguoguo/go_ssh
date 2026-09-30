@@ -29,11 +29,11 @@ func TestSaveSessionSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载快照失败：%v", err)
 	}
-	if len(snap.OpenIDs) != 2 || snap.OpenIDs[0] != s1.ID || snap.OpenIDs[1] != s2.ID {
-		t.Fatalf("快照应记录两个会话且顺序正确，实际 %v", snap.OpenIDs)
+	if len(snap.OpenIDs) != 2 || snap.OpenIDs[0] != s1.ConnInfo().ID || snap.OpenIDs[1] != s2.ConnInfo().ID {
+		t.Fatalf("快照应记录两个连接且顺序正确，实际 %v", snap.OpenIDs)
 	}
-	if snap.ActiveID != s2.ID {
-		t.Fatalf("活动会话应为 %s，实际 %q", s2.ID, snap.ActiveID)
+	if snap.ActiveID != s2.ConnInfo().ID {
+		t.Fatalf("活动连接应为 %s，实际 %q", s2.ConnInfo().ID, snap.ActiveID)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestRestorePromptReconnects(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if s, ok := mgr.Get(c.ID); ok && s.State() == remotessh.StateConnected {
+		if s, ok := mgr.GetByConn(c.ID); ok && s.State() == remotessh.StateConnected {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

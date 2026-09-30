@@ -119,6 +119,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlW:
 		m.closeActiveSession()
 		return m, m.armOutput()
+	case tea.KeyCtrlT:
+		return m, m.duplicateActiveTab()
 	case tea.KeyCtrlR:
 		m.reconnectActive()
 		return m, m.armOutput()

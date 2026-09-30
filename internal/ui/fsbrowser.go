@@ -227,7 +227,7 @@ func (m *Model) fileKey(d *dlg, msg tea.KeyMsg) {
 			}
 			return
 		case d.fsFilter == "" && (r == 'U'): // 上传本地文件到当前目录
-			m.fsStartOp(d, "upload", "上传本地文件：", "", false)
+			m.fsStartOp(d, "upload", fsUploadLabel, "", false)
 			return
 		case d.fsFilter == "" && (r == 'D'): // 删除（二次确认）
 			if e, ok := d.currentFsEntry(); ok {
@@ -258,9 +258,25 @@ func (m *Model) fsStartOp(d *dlg, op, label, prefill string, isDir bool) {
 	}
 }
 
-// fsInputKey 处理参数输入态的按键（仅 esc/enter/backspace/可打印字符）。
+// fsUploadLabel 上传输入态的提示文案；文件选择器打开期间会被替换为进行中提示，结束后恢复。
+const fsUploadLabel = "上传本地文件（Ctrl+F 选文件）："
+
+// fsInputKey 处理参数输入态的按键（仅 esc/enter/backspace/可打印字符/Ctrl+F）。
 func (m *Model) fsInputKey(d *dlg, msg tea.KeyMsg) {
+	if d.fsPicking {
+		// 系统文件选择器已调起：吞掉所有按键，等待选择结果（避免半途 Esc/Enter 把状态弄乱）。
+		return
+	}
 	switch msg.Type {
+	case tea.KeyCtrlF:
+		// 仅「上传本地文件」支持调起系统文件选择器（选的是本地路径）。
+		// 不用 Ctrl+P（已留给命令行发送命令）。PowerShell 冷启动要 1~3 秒，
+		// 期间换上「正在打开…」提示，避免看起来像没反应。
+		if d.fsOp == "upload" {
+			d.fsPicking = true
+			d.fsInputLabel = "正在打开系统文件选择器..."
+			m.afterCmd = localFilePickerCmd()
+		}
 	case tea.KeyEsc:
 		d.fsOp, d.fsInput, d.fsInputLabel = "", "", ""
 	case tea.KeyEnter:

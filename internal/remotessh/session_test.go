@@ -68,8 +68,11 @@ func TestOpenWritesToTerminal(t *testing.T) {
 	if already {
 		t.Fatal("首次打开不应返回已存在的会话")
 	}
-	if s.ID != conn.ID {
-		t.Fatalf("会话 ID = %q，期望 %q", s.ID, conn.ID)
+	if s.ConnID() != conn.ID {
+		t.Fatalf("会话所属连接 = %q，期望 %q", s.ConnID(), conn.ID)
+	}
+	if s.ID == conn.ID {
+		t.Fatalf("会话 ID %q 不应等于连接 ID（需支持同连接多 tab）", s.ID)
 	}
 
 	waitEvent(t, mgr, EventConnected, 10*time.Second)
@@ -100,7 +103,7 @@ func TestOpenWritesToTerminal(t *testing.T) {
 	}
 
 	// Close 后应从管理器移除并变为已关闭状态
-	mgr.Close(conn.ID)
+	mgr.Close(s.ID)
 	if mgr.Len() != 0 {
 		t.Fatalf("关闭后会话数 = %d，期望 0", mgr.Len())
 	}
@@ -149,7 +152,7 @@ func TestUnknownHostNeedsTrustThenReconnect(t *testing.T) {
 		t.Fatalf("TrustHost 失败: %v", err)
 	}
 	// 重连应复用已保存的口令，不再弹密码框
-	second := mgr.Reopen(conn, first.Secret(), 40, 8, 100)
+	second := mgr.Reopen(first.ID, first.Secret(), 40, 8, 100)
 	waitEvent(t, mgr, EventConnected, 10*time.Second)
 	if second.State() != StateConnected {
 		t.Fatalf("信任后重连应成功，实际状态 %v（err=%v）", second.State(), second.Err())
@@ -172,7 +175,7 @@ func TestOpenBadPasswordReportsError(t *testing.T) {
 		select {
 		case ev := <-mgr.Events():
 			if ev.Kind == EventError {
-				if s, ok := mgr.Get(conn.ID); ok && s.State() != StateError {
+				if s, ok := mgr.GetByConn(conn.ID); ok && s.State() != StateError {
 					t.Fatalf("失败后状态 = %v，期望 StateError", s.State())
 				}
 				return
@@ -180,6 +183,47 @@ func TestOpenBadPasswordReportsError(t *testing.T) {
 		case <-deadline:
 			t.Fatal("未收到连接失败事件")
 		}
+	}
+}
+
+// TestOpenDedupAndOpenNewDistinct 验证「同一连接多 tab」的核心不变量：
+//   - Open 对同一连接去重（返回既有会话，already=true），不会无谓新建；
+//   - OpenNew 总是强制新建一个独立会话，ID 与既有会话不同，但同属该连接。
+func TestOpenDedupAndOpenNewDistinct(t *testing.T) {
+	srv := testutil.StartSSHServer(t)
+	mgr := NewManager()
+	defer mgr.CloseAll()
+
+	conn := store.Connection{ID: "multi", Host: srv.Host, Port: srv.Port, User: "test", AuthType: store.AuthPassword, Password: "pass"}
+
+	a, already := mgr.Open(conn, "pass", 40, 8, 100)
+	if already {
+		t.Fatal("首次 Open 不应 already")
+	}
+	b, again := mgr.Open(conn, "pass", 40, 8, 100)
+	if !again {
+		t.Fatal("重复 Open 同连接应 already=true")
+	}
+	if a.ID != b.ID {
+		t.Fatalf("重复 Open 应返回同一会话，得到 %q 与 %q", a.ID, b.ID)
+	}
+	if mgr.Len() != 1 {
+		t.Fatalf("同连接重复 Open 后会话数应为 1，实际 %d", mgr.Len())
+	}
+
+	// OpenNew 强制再开一个独立会话（同一连接多 tab）
+	c := mgr.OpenNew(conn, "pass", 40, 8, 100)
+	if c.ID == a.ID {
+		t.Fatal("OpenNew 应产生不同于既有会话的 ID")
+	}
+	if c.ConnID() != conn.ID {
+		t.Fatalf("OpenNew 的会话应属于同一连接，得到 %q", c.ConnID())
+	}
+	if mgr.Len() != 2 {
+		t.Fatalf("OpenNew 后应有 2 个会话，实际 %d", mgr.Len())
+	}
+	if _, ok := mgr.GetByConn(conn.ID); !ok {
+		t.Fatal("GetByConn 应找到该连接的会话")
 	}
 }
 
@@ -193,8 +237,9 @@ func stripANSIForTest(s string) string {
 				continue
 			}
 		}
-		b.WriteByte(s[i])
-		i++
+	b.WriteByte(s[i])
+	i++
 	}
 	return b.String()
 }
+

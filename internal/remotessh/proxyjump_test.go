@@ -28,11 +28,11 @@ func TestProxyJumpConnects(t *testing.T) {
 		AuthType: store.AuthPassword,
 		Password: "pass",
 	}
-	if _, already := mgr.Open(conn, "pass", 80, 24, 5000); already {
+	sess, already := mgr.Open(conn, "pass", 80, 24, 5000)
+	if already {
 		t.Fatal("不应报告已存在")
 	}
-	sess, ok := mgr.Get("t1")
-	if !ok {
+	if _, ok := mgr.Get(sess.ID); !ok {
 		t.Fatal("连接后应能取到会话")
 	}
 	if !waitConnected(sess) {
@@ -60,8 +60,8 @@ func TestProxyJumpDisabledConnectsDirectly(t *testing.T) {
 		AuthType: store.AuthPassword,
 		Password: "pass",
 	}
-	mgr.Open(conn, "pass", 80, 24, 5000)
-	sess, _ := mgr.Get("t2")
+	sess2, _ := mgr.Open(conn, "pass", 80, 24, 5000)
+	sess, _ := mgr.Get(sess2.ID)
 	if !waitConnected(sess) {
 		t.Fatalf("状态应为已连接，实际 %v (err=%v)", sess.State(), sess.Err())
 	}

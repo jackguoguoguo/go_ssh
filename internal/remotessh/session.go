@@ -2,12 +2,14 @@ package remotessh
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sshx "golang.org/x/crypto/ssh"
@@ -15,6 +17,9 @@ import (
 	"sshtool/internal/store"
 	"sshtool/internal/vt"
 )
+
+// sessionSeq 为每次新建会话分配单调递增序号，保证同一连接也能产生唯一会话 ID。
+var sessionSeq uint64
 
 // State 表示会话生命周期状态。
 type State int
@@ -120,6 +125,13 @@ type Session struct {
 	events chan<- Event  // 全局事件通道
 }
 
+// nextSessionID 生成全局唯一的会话 ID：连接 ID 加上单调递增序号，
+// 这样同一连接可以打开多个互不干扰的会话（多 tab）。
+func nextSessionID(connID string) string {
+	n := atomic.AddUint64(&sessionSeq, 1)
+	return fmt.Sprintf("%s#%d", connID, n)
+}
+
 // newSession 创建一个处于 StateConnecting 的会话。
 func newSession(conn store.Connection, cols, rows int, events chan<- Event, outCh chan<- string, scrollback int) *Session {
 	if cols < 1 {
@@ -132,7 +144,7 @@ func newSession(conn store.Connection, cols, rows int, events chan<- Event, outC
 		scrollback = store.DefaultScrollback
 	}
 	s := &Session{
-		ID:     conn.ID,
+		ID:     nextSessionID(conn.ID),
 		Conn:   conn,
 		term:   vt.New(cols, rows, scrollback),
 		state:  StateConnecting,
@@ -484,10 +496,8 @@ func connectReal(s *Session, secret string) error {
 
 	s.emit(Event{SessionID: s.ID, Kind: EventConnected})
 
-	// 让远端 shell 每次刷新提示符时通过 OSC 标题上报当前工作目录（前缀 SSHTPWD:）。
-	// 终端模拟器会把 OSC 标题吞掉不显示，UI 读取标题即可静默获得远端 cwd，
-	// 无需轮询命令、也不污染屏幕。bash 支持 PROMPT_COMMAND；sh 仅设置了无害的环境变量。
-	s.injectCwdSync()
+	// 不再向远端注入任何命令（含早期通过 PROMPT_COMMAND 静默同步远端 cwd 的实现）。
+	// 远端工作目录改由 UI 在本地解析 cd 类命令兜底，避免连接后自动发送命令干扰远端环境。
 
 	if s.Conn.StartupCmd != "" {
 		time.Sleep(300 * time.Millisecond)
@@ -598,14 +608,6 @@ func (s *Session) reconnect() {
 	}
 	s.mu.Unlock()
 	s.emit(Event{SessionID: s.ID, Kind: EventReconnectFailed})
-}
-
-// injectCwdSync 让远端 shell 每次刷新提示符时通过 OSC 标题上报当前工作目录。
-// 标题格式为 `SSHTPWD:<cwd>`，由终端模拟器静默捕获，供 UI 读取。
-func (s *Session) injectCwdSync() {
-	// 原始字符串：反斜杠保持字面量，交给远端 printf 解释（\033=ESC，\\=单反斜杠=OSC 终结 ST）。
-	cmd := `PROMPT_COMMAND='printf "\033]0;SSHTPWD:%s\033\\" "$(pwd)"'`
-	_ = s.Write([]byte(cmd + "\n"))
 }
 
 // readLoop 读取远端输出，按 batchWindow 聚合成批后写入终端缓冲区。

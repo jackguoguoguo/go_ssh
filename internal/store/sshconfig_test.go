@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -57,6 +58,31 @@ func TestImportSSHConfigDedup(t *testing.T) {
 	added2, skipped2 := s.ImportSSHConfig([]byte(sampleSSHConfig))
 	if added2 != 0 || skipped2 != 3 {
 		t.Fatalf("重复导入应为 0/3，得到 %d/%d", added2, skipped2)
+	}
+}
+
+func TestImportSSHConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "ssh_config")
+	if err := os.WriteFile(cfg, []byte(sampleSSHConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 文件不存在时静默跳过，不报错。
+	a0, s0, e0 := New(filepath.Join(dir, "c0.json")).ImportSSHConfigFile(filepath.Join(dir, "nope"))
+	if e0 != nil || a0 != 0 || s0 != 0 {
+		t.Fatalf("缺失文件应返回 (0,0,nil)，得到 (%d,%d,%v)", a0, s0, e0)
+	}
+
+	// 从文件导入成功后，二次读取应全部跳过（去重，呼应多次读取场景）。
+	s := New(filepath.Join(dir, "c1.json"))
+	added, skipped, err := s.ImportSSHConfigFile(cfg)
+	if err != nil || added != 3 || skipped != 0 {
+		t.Fatalf("首次从文件导入应为 (3,0,nil)，得到 (%d,%d,%v)", added, skipped, err)
+	}
+	added2, skipped2, err2 := s.ImportSSHConfigFile(cfg)
+	if err2 != nil || added2 != 0 || skipped2 != 3 {
+		t.Fatalf("重复从文件导入应为 (0,3,nil)，得到 (%d,%d,%v)", added2, skipped2, err2)
 	}
 }
 

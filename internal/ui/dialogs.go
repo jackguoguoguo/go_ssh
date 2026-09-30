@@ -81,7 +81,8 @@ type dlg struct {
 	fsInputLabel string
 	fsInputPath  string // 操作针对的远端文件（重命名 / 权限 / 下载）；目录操作留空
 	fsInputIsDir bool
-	fsConfirmDel bool // 删除二次确认态
+	fsConfirmDel bool  // 删除二次确认态
+	fsPicking    bool  // 系统文件选择器已调起、等待结果；期间吞掉输入框的所有按键
 
 	fsDone chan struct{} // 关闭对话框时关闭，停止编辑监听
 }
@@ -295,7 +296,7 @@ func (m *Model) renderDialog() string {
 				lines = append(lines, styleDim.Render("  过滤: "+d.fsFilter))
 			}
 			lines = append(lines, styleDim.Render("  Enter 打开/进入 · e 编辑 · u 上级 · ~ 家目录 · r 重命名 · m 权限 · n 新建目录"))
-			lines = append(lines, styleDim.Render("  d 下载到本地 · U 上传本地文件/目录 · D 删除 · / 过滤 · Esc 关闭"))
+			lines = append(lines, styleDim.Render("  d 下载到本地 · U 上传本地文件/目录(Ctrl+F 选文件) · D 删除 · / 过滤 · Esc 关闭"))
 			lines = append(lines, styleDim.Render("  目录会递归传输（保留子目录结构）"))
 		}
 
@@ -680,13 +681,14 @@ func helpBody() []string {
 		"  Ctrl+N          新建连接",
 		"  Ctrl+E          编辑选中的连接",
 		"  Ctrl+D          删除选中的连接",
-		"  Ctrl+W          关闭当前会话",
-		"  Ctrl+R          重连当前会话",
+	"  Ctrl+W          关闭当前会话",
+	"  Ctrl+R          重连当前会话",
+	"  Ctrl+T          复制当前会话为新 tab（同一连接可开多个）",
 		"  Ctrl+B          跳到「收藏命令」面板",
 		"  Ctrl+K          跳到「历史命令」面板并过滤",
 		"  Ctrl+G          SSH 密钥管理：生成 / 推送 / 查看 / 打标签 / 备份恢复 / 盘点 / 轮换",
 		"  Ctrl+O          远端文件浏览器：浏览/打开/编辑服务器上的文件",
-		"                  文件内可 r 重命名 · m 改权限 · n 新建目录 · d 下载 · U 上传 · D 删除",
+		"                  文件内可 r 重命名 · m 改权限 · n 新建目录 · d 下载 · U 上传(Ctrl+F 选文件) · D 删除",
 		"  Enter           连接面板：连接服务器；在分组头上回车可展开/收起该分组",
 		"  命令行 theme    切换主题（theme dark / theme light）",
 		"  命令行 batch    多主机批量执行（batch web-01 或 batch，回车后输入命令）",

@@ -89,45 +89,58 @@ func (m *Manager) Len() int {
 	return len(m.sessions)
 }
 
-// Open 打开一个会话。若该连接已有会话则直接返回既有会话（already=true）。
+// Open 打开一个会话：若该连接已有会话则直接返回既有会话（already=true），
+// 从而「点已连接的连接项」会聚焦已有 tab 而非新建。
 // cols/rows 为初始终端尺寸，secret 为密码或私钥口令。
 func (m *Manager) Open(conn store.Connection, secret string, cols, rows, scrollback int) (s *Session, already bool) {
-	m.mu.Lock()
-	if exist, ok := m.sessions[conn.ID]; ok {
-		m.mu.Unlock()
+	if exist, ok := m.GetByConn(conn.ID); ok {
 		return exist, true
 	}
-	s = newSession(conn, cols, rows, m.events, m.output, scrollback)
-	m.sessions[conn.ID] = s
-	m.order = append(m.order, conn.ID)
-	m.mu.Unlock()
-
-	go s.dial(secret)
-	return s, false
+	return m.spawn(conn, secret, cols, rows, scrollback), false
 }
 
-// Reopen 关闭并重连一个已存在的会话（用于失败重试）。
-func (m *Manager) Reopen(conn store.Connection, secret string, cols, rows, scrollback int) *Session {
-	m.Close(conn.ID)
+// OpenNew 总是为同一连接创建一个全新的会话，无视是否已有会话，
+// 用于「复制当前 tab / 同一连接多 tab」。
+func (m *Manager) OpenNew(conn store.Connection, secret string, cols, rows, scrollback int) *Session {
+	return m.spawn(conn, secret, cols, rows, scrollback)
+}
 
+// spawn 创建会话、登记到管理器并启动后台拨号，返回该会话。
+func (m *Manager) spawn(conn store.Connection, secret string, cols, rows, scrollback int) *Session {
 	s := newSession(conn, cols, rows, m.events, m.output, scrollback)
-
 	m.mu.Lock()
-	m.sessions[conn.ID] = s
-	found := false
-	for _, id := range m.order {
-		if id == conn.ID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		m.order = append(m.order, conn.ID)
-	}
+	m.sessions[s.ID] = s
+	m.order = append(m.order, s.ID)
 	m.mu.Unlock()
 
 	go s.dial(secret)
 	return s
+}
+
+// GetByConn 返回该连接当前任意一个会话（用于「聚焦已有 tab」）。
+func (m *Manager) GetByConn(connID string) (*Session, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.order {
+		if s, ok := m.sessions[id]; ok && s.Conn.ID == connID {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// Reopen 关闭指定会话（按会话 ID）并以原口令重连，返回新会话。
+// 用于密码 / 主机指纹确认后的重试，只影响这一个会话，不波及其余同连接 tab。
+func (m *Manager) Reopen(oldSessionID string, secret string, cols, rows, scrollback int) *Session {
+	m.mu.Lock()
+	old, ok := m.sessions[oldSessionID]
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	conn := old.Conn
+	m.Close(oldSessionID)
+	return m.spawn(conn, secret, cols, rows, scrollback)
 }
 
 // Close 关闭并移除会话。

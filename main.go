@@ -62,6 +62,16 @@ func main() {
 		st = store.New(store.DefaultPath())
 	}
 
+	// 启动时把本机 ~/.ssh/config 里已有的连接并入 store：按名称去重，
+	// 重复启动不会重复新增（已存在 store 的条目会被跳过）。读取失败仅告警，不影响启动。
+	if added, _, ierr := st.ImportSSHConfigFile(ui.DefaultSSHConfigPath()); ierr != nil {
+		fmt.Fprintln(os.Stderr, "警告：读取 ~/.ssh/config 失败，跳过自动导入。", ierr)
+	} else if added > 0 {
+		if serr := st.Save(); serr != nil {
+			fmt.Fprintln(os.Stderr, "警告：导入 ~/.ssh/config 后保存失败。", serr)
+		}
+	}
+
 	mgr := remotessh.NewManager()
 	defer mgr.CloseAll()
 

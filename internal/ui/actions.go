@@ -507,14 +507,16 @@ func (m *Model) reconnectActive() {
 		return
 	}
 	c := s.ConnInfo()
-	m.mgr.Close(c.ID)
+	// 只重连当前这个会话（按会话 ID 关闭），不影响同连接的其他 tab。
+	m.mgr.Close(s.TabID())
 	m.refreshSessions()
 	m.connectConn(c)
 }
 
 // connectConn 连接（或激活）一个连接配置。
 func (m *Model) connectConn(c store.Connection) tea.Cmd {
-	if s, ok := m.mgr.Get(c.ID); ok {
+	// 该连接已有会话则直接聚焦其 tab（不新建），保持「点已连接项聚焦」的行为。
+	if s, ok := m.mgr.GetByConn(c.ID); ok {
 		m.activeID = s.ID
 		m.focus = focusTerm
 		m.refreshSessions()
@@ -589,6 +591,27 @@ func (m *Model) doOpen(c store.Connection, secret string) {
 	m.focus = focusTerm
 	m.inputMode = false
 	m.refreshSessions()
+}
+
+// duplicateActiveTab 以当前活动会话的同一连接再开一个独立会话（多 tab / 复制当前 tab）。
+// 本地 shell 则再开一个本地 shell。复用内存里缓存的口令，已连接的会话不会被重复询问。
+func (m *Model) duplicateActiveTab() tea.Cmd {
+	s := m.activeSession()
+	if s == nil {
+		return m.setMsg("没有可复制的会话")
+	}
+	if isLocalShell(s) {
+		return m.openLocalShell()
+	}
+	c := s.ConnInfo()
+	l := m.computeLayout()
+	scrollback := m.st.GetSettings().Scrollback
+	ns := m.mgr.OpenNew(c, s.Secret(), l.termCol, l.termRow, scrollback)
+	m.activeID = ns.ID
+	m.focus = focusTerm
+	m.inputMode = false
+	m.refreshSessions()
+	return m.setMsg("已为 " + c.User + "@" + c.Host + " 新开一个 tab")
 }
 
 // ---------- 对话框动作 ----------

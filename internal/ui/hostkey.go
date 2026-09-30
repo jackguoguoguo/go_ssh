@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"sshtool/internal/remotessh"
+	"sshtool/internal/store"
 )
 
 // hostKeyAsk 是一次待用户确认的主机指纹询问。
@@ -16,6 +17,15 @@ import (
 type hostKeyAsk struct {
 	sessionID string
 	err       *remotessh.HostKeyError
+}
+
+// connOf 由会话 ID 取回其所属连接配置（事件携带的是会话 ID，需经 Manager 反查）。
+func (m *Model) connOf(sessionID string) (store.Connection, bool) {
+	s, ok := m.mgr.Get(sessionID)
+	if !ok {
+		return store.Connection{}, false
+	}
+	return s.Conn, true
 }
 
 // enqueueHostKey 收到指纹事件后入队并尝试弹框。
@@ -37,7 +47,7 @@ func (m *Model) showNextHostKeyPrompt() {
 	hke := ask.err
 
 	who := hke.Addr
-	if c, ok := m.st.Connection(ask.sessionID); ok && c.Host != "" {
+	if c, ok := m.connOf(ask.sessionID); ok && c.Host != "" {
 		who = c.User + "@" + c.Host + " (" + hke.Addr + ")"
 	}
 
@@ -78,17 +88,14 @@ func (m *Model) trustAndReopen(ask hostKeyAsk) {
 		m.setMsg("写入 known_hosts 失败：" + err.Error())
 		return
 	}
-	c, ok := m.st.Connection(ask.sessionID)
+	s, ok := m.mgr.Get(ask.sessionID)
 	if !ok {
-		m.setMsg("已信任 " + ask.err.Addr + "，但找不到对应连接，请手动重连")
+		m.setMsg("已信任 " + ask.err.Addr + "，但找不到对应会话，请手动重连")
 		return
 	}
-	secret := ""
-	if s, _ := m.mgr.Get(ask.sessionID); s != nil {
-		secret = s.Secret()
-	}
+	secret := s.Secret()
 	l := m.computeLayout()
-	ns := m.mgr.Reopen(c, secret, l.termCol, l.termRow, m.st.GetSettings().Scrollback)
+	ns := m.mgr.Reopen(ask.sessionID, secret, l.termCol, l.termRow, m.st.GetSettings().Scrollback)
 	m.activeID = ns.ID
 	m.refreshSessions()
 	m.setMsg("已信任 " + ask.err.Addr + "，正在重连")

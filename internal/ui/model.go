@@ -269,21 +269,10 @@ func (m *Model) activeIndex() int {
 	return -1
 }
 
-// cwdMarker 是远端 shell 通过 OSC 标题上报当前目录时使用的前缀。
-const cwdMarker = "SSHTPWD:"
-
-// remoteCwd 读取当前活动会话的远端工作目录。
-// 优先使用终端标题里由 PROMPT_COMMAND 静默上报的值（前缀 SSHTPWD:），
-// 取不到时回退到本机根据命令行 cd 解析得到的值。
+// remoteCwd 返回当前活动会话的远端工作目录。
+// 由 UI 在本地解析 cd 类命令兜底（见 trackCwd），不再向远端注入命令（早期通过
+// PROMPT_COMMAND + OSC 标题静默同步 cwd 的实现已移除）。
 func (m *Model) remoteCwd() string {
-	s := m.activeSession()
-	if s == nil {
-		return ""
-	}
-	title := s.Term().Title()
-	if strings.HasPrefix(title, cwdMarker) {
-		return strings.TrimSpace(title[len(cwdMarker):])
-	}
 	return m.cwd
 }
 
@@ -455,6 +444,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case filePickedMsg:
+		// 无论结果如何，先退出「选择器打开中」状态并恢复输入提示文案。
+		if m.dlg != nil && m.dlg.kind == dlgFile && m.dlg.fsPicking {
+			m.dlg.fsPicking = false
+			if m.dlg.fsOp == "upload" {
+				m.dlg.fsInputLabel = fsUploadLabel
+			}
+		}
+		if msg.err != nil {
+			m.setMsg(msg.err.Error())
+			return m, nil
+		}
+		// 用户取消（path 为空）时静默回到输入态；选到了就把路径填进输入框，回车确认上传。
+		if msg.path != "" && m.dlg != nil && m.dlg.kind == dlgFile && m.dlg.fsOp == "upload" {
+			m.dlg.fsInput = msg.path
+		}
+		return m, nil
+
 	case clearMsg:
 		if msg.seq == m.msgSeq {
 			m.msg = ""
@@ -486,9 +493,11 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 	switch ev.Kind {
 	case remotessh.EventConnected:
 		m.refresh()
-		remotessh.Touch(m.st, ev.SessionID)
+		if c, ok := m.connOf(ev.SessionID); ok {
+			remotessh.Touch(m.st, c.ID)
+		}
 	case remotessh.EventNeedSecret:
-		if c, ok := m.st.Connection(ev.SessionID); ok {
+		if c, ok := m.connOf(ev.SessionID); ok {
 			title := "需要密码"
 			if c.AuthType == store.AuthKey {
 				title = "需要私钥口令"
@@ -501,7 +510,7 @@ func (m *Model) onSessionEvent(ev remotessh.Event) {
 				}
 				m.cachePassphrase(conn, secret)
 				l := m.computeLayout()
-				s := m.mgr.Reopen(conn, secret, l.termCol, l.termRow, m.st.GetSettings().Scrollback)
+				s := m.mgr.Reopen(ev.SessionID, secret, l.termCol, l.termRow, m.st.GetSettings().Scrollback)
 				m.activeID = s.ID
 				m.refreshSessions()
 			})

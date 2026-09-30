@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// defaultSSHConfigPath 返回 ~/.ssh/config；取不到主目录时退化为相对路径。
-func defaultSSHConfigPath() string {
+// DefaultSSHConfigPath 返回 ~/.ssh/config；取不到主目录时退化为相对路径。
+func DefaultSSHConfigPath() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return filepath.Join(home, ".ssh", "config")
 	}
@@ -76,7 +76,7 @@ func metaArg(rest []string) string {
 func (m *Model) handleImportSSHConfig(path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		path = defaultSSHConfigPath()
+		path = DefaultSSHConfigPath()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -101,7 +101,7 @@ func (m *Model) handleExportSSHConfig(path string) {
 	if path == "" {
 		path = defaultExportPath()
 	}
-	if filepath.Clean(path) == filepath.Clean(defaultSSHConfigPath()) {
+	if filepath.Clean(path) == filepath.Clean(DefaultSSHConfigPath()) {
 		m.setMsg("为避免覆盖真实 ~/.ssh/config，请指定其它导出路径")
 		return
 	}

@@ -8,3 +8,6 @@ func (s *Session) TabID() string { return s.ID }
 
 // ConnInfo 会话所属连接配置的取值器（同理：Conn 是字段，故另起方法名）。
 func (s *Session) ConnInfo() store.Connection { return s.Conn }
+
+// ConnID 返回该会话对应的连接 ID（多个会话可共享同一连接 ID，用于多 tab）。
+func (s *Session) ConnID() string { return s.Conn.ID }

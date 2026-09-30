@@ -151,6 +151,20 @@ func (s *Store) ImportSSHConfig(data []byte) (added, skipped int) {
 	return added, skipped
 }
 
+// ImportSSHConfigFile 从指定路径读取 ssh_config 文本并合并进 store（按名称去重）。
+// 文件不存在时返回 (0,0,nil)，调用方无需特殊处理；其它读取错误原样返回。
+func (s *Store) ImportSSHConfigFile(path string) (added, skipped int, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	added, skipped = s.ImportSSHConfig(data)
+	return added, skipped, nil
+}
+
 // ExportSSHConfig 把当前连接渲染为 ssh_config 文本（按分组加注释，便于阅读）。
 func (s *Store) ExportSSHConfig() string {
 	storeMu.RLock()

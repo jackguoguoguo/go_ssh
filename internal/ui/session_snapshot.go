@@ -15,20 +15,26 @@ func restoreDisabled() bool {
 }
 
 // saveSessionSnapshot 记录当前打开的 SSH 会话（按标签顺序）与活动会话。
-// 本地 shell 无法跨进程复原，故不记录。
+// 本地 shell 无法跨进程复原，故不记录；同一连接的多个 tab 去重为一条（重启后复原一个即可）。
 func (m *Model) saveSessionSnapshot() {
+	seen := map[string]bool{}
 	ids := make([]string, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		if isLocalShell(s) {
 			continue
 		}
-		ids = append(ids, s.TabID())
+		cid := s.ConnInfo().ID
+		if seen[cid] {
+			continue
+		}
+		seen[cid] = true
+		ids = append(ids, cid)
 	}
 	snap := store.SessionSnapshot{OpenIDs: ids}
 	// 活动会话若也是 SSH 会话则一并记录（本地 shell 作为活动会话时不记录）。
 	for _, s := range m.sessions {
 		if s.TabID() == m.activeID && !isLocalShell(s) {
-			snap.ActiveID = m.activeID
+			snap.ActiveID = s.ConnInfo().ID
 			break
 		}
 	}
@@ -91,7 +97,7 @@ func (m *Model) restorePrompt() {
 			m.connectConn(c)
 		}
 		if active != "" {
-			if s, ok := m.mgr.Get(active); ok {
+			if s, ok := m.mgr.GetByConn(active); ok {
 				m.activeID = s.ID
 				m.refreshSessions()
 			}

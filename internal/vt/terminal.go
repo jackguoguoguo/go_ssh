@@ -365,8 +365,13 @@ func (t *Terminal) SetSelection(ax, ay, bx, by int) {
 	t.selAX, t.selAY = ax, ay
 	t.selBX, t.selBY = bx, by
 	if !t.frozen {
+		// 注意顺序：必须先读出当前视口（此时 frozen 仍为 false，viewTopLocked
+		// 返回真实的 history.len()-scrollOffset），再置 frozen=true。
+		// 若先置 frozen=true 再读，viewTopLocked 会直接返回尚未赋值的
+		// frozenTop（初值 0），把视口错误钉到缓冲第 0 行（顶部）。
+		top := t.viewTopLocked()
 		t.frozen = true
-		t.frozenTop = t.viewTopLocked()
+		t.frozenTop = top
 	}
 }
 

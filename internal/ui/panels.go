@@ -165,9 +165,23 @@ func (m *Model) buildTabs(w int) (string, []tabBound) {
 		m.tabBounds = append(m.tabBounds, bound)
 	}
 
+	// 统计每个连接的会话数，便于「同一连接多 tab」时追加序号区分。
+	connCount := map[string]int{}
+	for _, s := range m.sessions {
+		if sshSessionOf(s) != nil {
+			connCount[s.ConnInfo().ID]++
+		}
+	}
+	connSeen := map[string]int{}
+
 	for i, s := range m.sessions {
 		idx := i + 1
 		label := s.Label()
+		// 同一连接有多个会话时追加 #n，方便区分哪些 tab 属于同一台主机。
+		if sshSessionOf(s) != nil && connCount[s.ConnInfo().ID] > 1 {
+			connSeen[s.ConnInfo().ID]++
+			label = fmt.Sprintf("%s #%d", label, connSeen[s.ConnInfo().ID])
+		}
 		if len([]rune(label)) > 14 {
 			label = string([]rune(label)[:13]) + "…"
 		}
@@ -317,7 +331,7 @@ func (m *Model) renderConnPanel(r rect) string {
 			name = c.Host
 		}
 		prefix := "   " // 连接项缩进，与分组头区分
-		if _, ok := m.mgr.Get(c.ID); ok {
+		if _, ok := m.mgr.GetByConn(c.ID); ok {
 			prefix = " ● "
 		}
 		items = append(items, prefix+name)
